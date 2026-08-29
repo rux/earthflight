@@ -6,6 +6,10 @@
 	objectVersion = 110;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		CFB59D423042D4D400FD96FD /* AGENTS.md in Resources */ = {isa = PBXBuildFile; fileRef = CFB59D413042D4CC00FD96FD /* AGENTS.md */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		CF2DEC3130402D2600BD2F79 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -19,6 +23,7 @@
 /* Begin PBXFileReference section */
 		CF2DEC1930402D2500BD2F79 /* earthflight.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = earthflight.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		CF2DEC3030402D2600BD2F79 /* earthflightTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = earthflightTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		CFB59D413042D4CC00FD96FD /* AGENTS.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = AGENTS.md; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -36,9 +41,6 @@
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				CF2DEC3630402D2600BD2F79 /* Exceptions for "earthflight" folder in "earthflight" target */,
-			);
-			explicitFolders = (
-				Resources/Materials,
 			);
 			path = earthflight;
 			sourceTree = "<group>";
@@ -67,6 +69,7 @@
 		CF2DEC1030402D2500BD2F79 = {
 			isa = PBXGroup;
 			children = (
+				CFB59D413042D4CC00FD96FD /* AGENTS.md */,
 				CF2DEC1B30402D2500BD2F79 /* earthflight */,
 				CF2DEC3330402D2600BD2F79 /* earthflightTests */,
 				CF2DEC1A30402D2500BD2F79 /* Products */,
@@ -167,6 +170,7 @@
 		CF2DEC1730402D2500BD2F79 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
+				CFB59D423042D4D400FD96FD /* AGENTS.md in Resources */,
 			);
 		};
 		CF2DEC2E30402D2600BD2F79 /* Resources */ = {

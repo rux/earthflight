@@ -1,19 +1,18 @@
-//
-//  earthflightTests.swift
-//  earthflightTests
-//
-//  Created by Russ Anderson on 27/08/2026.
-//
-
+import Foundation
 import Testing
-@testable import earthflight
 
-struct earthflightTests {
+struct EarthflightTests {
+    @Test("The app launches directly into full immersion with an extended gamepad")
+    func immersiveLaunchConfiguration() {
+        let sceneManifest = Bundle.main.object(
+            forInfoDictionaryKey: "UIApplicationSceneManifest"
+        ) as? [String: Any]
+        let defaultRole = sceneManifest?["UIApplicationPreferredDefaultSceneSessionRole"] as? String
+        let gameControllerProfiles = Bundle.main.object(
+            forInfoDictionaryKey: "GCSupportedGameControllers"
+        ) as? [[String: Any]]
 
-    @Test func example() async throws {
-        // Write your test here and use APIs like `#expect(...)` to check expected conditions.
-        // Swift Testing Documentation
-        // https://developer.apple.com/documentation/testing
+        #expect(defaultRole == "UISceneSessionRoleImmersiveSpaceApplication")
+        #expect(gameControllerProfiles?.contains { $0["ProfileName"] as? String == "Extended" } == true)
     }
-
 }

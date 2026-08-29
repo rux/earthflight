@@ -589,4 +589,6 @@ Never claim that controller mapping, comfort, visual correctness or device perfo
 
 Do not create Git commits unless explicitly asked.
 
+Each milestone will be executed by a different LLM coding session, so liberally include comments in the code that will materially benefit future sessions if knowledge should be passed forwards.
+
 When two implementations are viable, choose the simpler reversible one. Do not future-proof.

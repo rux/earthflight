@@ -1,7 +1,71 @@
 import Foundation
+import simd
 import Testing
+@testable import earthflight
 
 struct EarthflightTests {
+    @Test("Full stick speed scales with altitude and boost")
+    @MainActor
+    func altitudeAndBoostSpeed() {
+        let lowAltitude = FlightState()
+        lowAltitude.leftStick = [0, 1]
+        lowAltitude.advance(deltaTime: 0.1)
+        let lowAltitudeDistance = simd_length(lowAltitude.position - SIMD3<Float>(0, 1.5, 0))
+
+        let highAltitude = FlightState()
+        highAltitude.isAscending = true
+        for _ in 0..<100 {
+            highAltitude.advance(deltaTime: 0.1)
+        }
+        highAltitude.isAscending = false
+        let highStart = highAltitude.position
+        highAltitude.leftStick = [0, 1]
+        highAltitude.advance(deltaTime: 0.1)
+        let highAltitudeDistance = simd_length(highAltitude.position - highStart)
+
+        let boosted = FlightState()
+        boosted.leftStick = [0, 1]
+        boosted.isBoosting = true
+        boosted.advance(deltaTime: 0.1)
+        let boostedDistance = simd_length(boosted.position - SIMD3<Float>(0, 1.5, 0))
+
+        #expect(highAltitudeDistance > lowAltitudeDistance)
+        #expect(abs(boostedDistance - lowAltitudeDistance * 4) < 0.0001)
+    }
+
+    @Test("Pushing the right stick forward pitches the craft nose down")
+    @MainActor
+    func invertedPitch() {
+        let flightState = FlightState()
+        flightState.rightStick = [0, 1]
+        flightState.advance(deltaTime: 0.1)
+
+        let forwardAfterPitch = flightState.orientation.act(SIMD3<Float>(0, 0, -1))
+
+        #expect(forwardAfterPitch.y < 0)
+    }
+
+    @Test("Horizon levelling preserves forward direction and removes roll")
+    @MainActor
+    func horizonLevelling() {
+        let flightState = FlightState()
+        flightState.rightStick = [0.3, -0.2]
+        flightState.advance(deltaTime: 0.1)
+        flightState.rightStick = .zero
+        flightState.isRollingRight = true
+        flightState.advance(deltaTime: 0.1)
+        flightState.isRollingRight = false
+
+        let forwardBeforeLevelling = flightState.orientation.act([0, 0, -1])
+        flightState.levelHorizon()
+
+        let forwardAfterLevelling = flightState.orientation.act([0, 0, -1])
+        let rightAfterLevelling = flightState.orientation.act([1, 0, 0])
+
+        #expect(simd_length(forwardAfterLevelling - forwardBeforeLevelling) < 0.0001)
+        #expect(abs(rightAfterLevelling.y) < 0.0001)
+    }
+
     @Test("The app launches directly into full immersion with an extended gamepad")
     func immersiveLaunchConfiguration() {
         let sceneManifest = Bundle.main.object(

@@ -92,4 +92,33 @@ struct EarthflightTests {
                 "Cesium Native cartographic round-trip: OK"
         )
     }
+
+    @Test("Google child URLs preserve their session and receive the API key once")
+    func googleTileURLDecoration() {
+        let key = "test-key"
+        let childURL = CesiumBridge.decoratedGoogleURL(
+            forTesting: "https://tile.googleapis.com/v1/3dtiles/datasets/example.glb?session=abc123&foo=bar",
+            apiKey: key
+        )
+        let existingKeyURL = CesiumBridge.decoratedGoogleURL(
+            forTesting: "https://tile.googleapis.com/v1/3dtiles/root.json?key=already-present",
+            apiKey: key
+        )
+        let otherHostURL = CesiumBridge.decoratedGoogleURL(
+            forTesting: "https://example.com/tile.glb?session=abc123",
+            apiKey: key
+        )
+
+        #expect(childURL.contains("session=abc123"))
+        #expect(childURL.contains("foo=bar"))
+        #expect(childURL.components(separatedBy: "key=").count == 2)
+        #expect(existingKeyURL.contains("key=already-present"))
+        #expect(existingKeyURL.components(separatedBy: "key=").count == 2)
+        #expect(otherHostURL == "https://example.com/tile.glb?session=abc123")
+    }
+
+    @Test("London ENU origin remains metre-scale and east points along local X")
+    func londonLocalFrame() {
+        #expect(CesiumBridge.runLondonLocalFrameSmokeTest() == "London local ENU frame: OK")
+    }
 }

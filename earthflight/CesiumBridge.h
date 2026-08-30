@@ -6,6 +6,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 + (NSString *)runSmokeTest;
 + (NSString *)runCartographicRoundTripSmokeTest;
++ (NSString *)decoratedGoogleURLForTesting:(NSString *)url apiKey:(NSString *)apiKey;
++ (NSString *)runLondonLocalFrameSmokeTest;
++ (void)startStaticLondonTilesWithAPIKey:(NSString *)apiKey;
++ (void)updateStaticLondonTiles;
 
 @end
 

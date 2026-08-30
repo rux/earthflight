@@ -26,6 +26,7 @@
 		CF2DEC3030402D2600BD2F79 /* earthflightTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = earthflightTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		CFB59D413042D4CC00FD96FD /* AGENTS.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = AGENTS.md; sourceTree = "<group>"; };
 		CFB59D4B3042FD3F00FD96FD /* BUILDING.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = BUILDING.md; sourceTree = "<group>"; };
+		E4F000001234567800000001 /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -71,6 +72,7 @@
 		CF2DEC1030402D2500BD2F79 = {
 			isa = PBXGroup;
 			children = (
+				E4F000001234567800000001 /* Config.xcconfig */,
 				CFB59D413042D4CC00FD96FD /* AGENTS.md */,
 				CF2DEC1B30402D2500BD2F79 /* earthflight */,
 				CF2DEC3330402D2600BD2F79 /* earthflightTests */,
@@ -158,7 +160,7 @@
 			);
 			mainGroup = CF2DEC1030402D2500BD2F79;
 			minimizedProjectReferenceProxies = 1;
-			preferredProjectObjectVersion = 77;
+			preferredProjectObjectVersion = 110;
 			productRefGroup = CF2DEC1A30402D2500BD2F79 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -208,10 +210,11 @@
 /* Begin XCBuildConfiguration section */
 		CF2DEC3830402D2600BD2F79 /* Debug configuration for PBXNativeTarget "earthflight" */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = E4F000001234567800000001 /* Config.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
+				CLANG_CXX_LANGUAGE_STANDARD = "c++20";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 6MPTQP8T3Y;
@@ -236,6 +239,42 @@
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lCesiumGeospatial",
+					"-lCesium3DTilesSelection",
+					"-lCesium3DTilesContent",
+					"-lCesium3DTilesReader",
+					"-lCesium3DTiles",
+					"-lCesiumGltfContent",
+					"-lCesiumGltfReader",
+					"-lCesiumGltf",
+					"-lCesiumImage",
+					"-lCesiumGeometry",
+					"-lCesiumGeospatial",
+					"-lCesiumAsync",
+					"-lCesiumUtility",
+					"-lCesiumCurl",
+					"-lcurl",
+					"-lssl",
+					"-lcrypto",
+					"-lz",
+					"-lCesiumJsonReader",
+					"-lCesiumQuantizedMeshTerrain",
+					"-lCesiumRasterOverlays",
+					"-lCesiumVectorData",
+					"-ls2",
+					"-lfmt",
+					"-lasync++",
+					"-lada",
+					"-lwebp",
+					"-lwebpdecoder",
+					"-lspdlog",
+					"-lktx",
+					"-lturbojpeg",
+					"-lzstd",
+					"-lEarthflightAbseil",
+					"-lspz",
+					"-ldraco",
+					"-lmeshoptimizer",
+					"-llibmodpbase64",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = uk.co.logicterm.earthflight;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -253,10 +292,11 @@
 		};
 		CF2DEC3930402D2600BD2F79 /* Release configuration for PBXNativeTarget "earthflight" */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = E4F000001234567800000001 /* Config.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
+				CLANG_CXX_LANGUAGE_STANDARD = "c++20";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 6MPTQP8T3Y;
@@ -281,6 +321,42 @@
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lCesiumGeospatial",
+					"-lCesium3DTilesSelection",
+					"-lCesium3DTilesContent",
+					"-lCesium3DTilesReader",
+					"-lCesium3DTiles",
+					"-lCesiumGltfContent",
+					"-lCesiumGltfReader",
+					"-lCesiumGltf",
+					"-lCesiumImage",
+					"-lCesiumGeometry",
+					"-lCesiumGeospatial",
+					"-lCesiumAsync",
+					"-lCesiumUtility",
+					"-lCesiumCurl",
+					"-lcurl",
+					"-lssl",
+					"-lcrypto",
+					"-lz",
+					"-lCesiumJsonReader",
+					"-lCesiumQuantizedMeshTerrain",
+					"-lCesiumRasterOverlays",
+					"-lCesiumVectorData",
+					"-ls2",
+					"-lfmt",
+					"-lasync++",
+					"-lada",
+					"-lwebp",
+					"-lwebpdecoder",
+					"-lspdlog",
+					"-lktx",
+					"-lturbojpeg",
+					"-lzstd",
+					"-lEarthflightAbseil",
+					"-lspz",
+					"-ldraco",
+					"-lmeshoptimizer",
+					"-llibmodpbase64",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = uk.co.logicterm.earthflight;
 				PRODUCT_NAME = "$(TARGET_NAME)";

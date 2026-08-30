@@ -1,0 +1,4 @@
+GOOGLE_MAPS_API_KEY =
+
+// Local secrets are deliberately optional so a clean clone still builds.
+#include? "Secrets.xcconfig"

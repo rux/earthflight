@@ -11,12 +11,16 @@ struct ImmersiveView: View {
             let worldRoot = makeSyntheticFlightWorld()
             content.add(worldRoot)
 
+            let apiKey = Bundle.main.object(forInfoDictionaryKey: "GoogleMapsAPIKey") as? String ?? ""
+            CesiumBridge.startStaticLondonTiles(withAPIKey: apiKey)
+
             let state = flightState
             let subscription = content.subscribe(to: SceneEvents.Update.self) { [weak state, weak worldRoot] event in
                 guard let state, let worldRoot else {
                     return
                 }
 
+                CesiumBridge.updateStaticLondonTiles()
                 state.update(worldRoot: worldRoot, deltaTime: event.deltaTime)
             }
             state.keepAlive(subscription)

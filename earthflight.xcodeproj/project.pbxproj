@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		CFB59D423042D4D400FD96FD /* AGENTS.md in Resources */ = {isa = PBXBuildFile; fileRef = CFB59D413042D4CC00FD96FD /* AGENTS.md */; };
 		CFB59D4C3042FD3F00FD96FD /* BUILDING.md in Resources */ = {isa = PBXBuildFile; fileRef = CFB59D4B3042FD3F00FD96FD /* BUILDING.md */; };
+		CFFB86ED304459ED0078AD3B /* GoogleTileRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFFB86EC304459ED0078AD3B /* GoogleTileRenderer.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -26,6 +27,7 @@
 		CF2DEC3030402D2600BD2F79 /* earthflightTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = earthflightTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		CFB59D413042D4CC00FD96FD /* AGENTS.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = AGENTS.md; sourceTree = "<group>"; };
 		CFB59D4B3042FD3F00FD96FD /* BUILDING.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = BUILDING.md; sourceTree = "<group>"; };
+		CFFB86EC304459ED0078AD3B /* GoogleTileRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleTileRenderer.swift; sourceTree = "<group>"; };
 		E4F000001234567800000001 /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -77,6 +79,7 @@
 				CF2DEC1B30402D2500BD2F79 /* earthflight */,
 				CF2DEC3330402D2600BD2F79 /* earthflightTests */,
 				CFB59D4B3042FD3F00FD96FD /* BUILDING.md */,
+				CFFB86EC304459ED0078AD3B /* GoogleTileRenderer.swift */,
 				CF2DEC1A30402D2500BD2F79 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -190,6 +193,7 @@
 		CF2DEC1530402D2500BD2F79 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			files = (
+				CFFB86ED304459ED0078AD3B /* GoogleTileRenderer.swift in Sources */,
 			);
 		};
 		CF2DEC2C30402D2600BD2F79 /* Sources */ = {

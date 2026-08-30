@@ -4,7 +4,10 @@
 #include <Cesium3DTilesContent/registerAllTileContentTypes.h>
 #include <Cesium3DTilesSelection/Tileset.h>
 #include <Cesium3DTilesSelection/TilesetExternals.h>
+#include <Cesium3DTilesSelection/TileContent.h>
 #include <Cesium3DTilesSelection/ViewState.h>
+#include <CesiumGltf/AccessorView.h>
+#include <CesiumGltfContent/GltfUtilities.h>
 #include <CesiumAsync/IAssetAccessor.h>
 #include <CesiumAsync/IAssetRequest.h>
 #include <CesiumAsync/IAssetResponse.h>
@@ -21,7 +24,28 @@
 #include <spdlog/sinks/callback_sink.h>
 #include <variant>
 
+@interface CesiumPrimitivePayload ()
+@property (nonatomic, readwrite) NSData *positions;
+@property (nonatomic, readwrite) NSData *textureCoordinates;
+@property (nonatomic, readwrite) NSData *indices;
+@property (nonatomic, readwrite) NSData *rgbaImage;
+@property (nonatomic, readwrite) NSInteger imageWidth;
+@property (nonatomic, readwrite) NSInteger imageHeight;
+@property (nonatomic, readwrite) BOOL doubleSided;
+@end
+
+@implementation CesiumPrimitivePayload
+@end
+
 namespace {
+
+void (^tileReady)(NSString *, NSArray<CesiumPrimitivePayload *> *);
+void (^tileFreed)(NSString *);
+
+struct TileRenderResources {
+    __strong NSString *identifier;
+    __strong NSArray<CesiumPrimitivePayload *> *primitives;
+};
 
 class DispatchTaskProcessor final : public CesiumAsync::ITaskProcessor {
 public:
@@ -40,6 +64,14 @@ std::shared_ptr<spdlog::logger> makeSanitizedCesiumLogger() {
             size_t end = text.find_first_of("&`' \n", key);
             text.replace(key + 4, end == std::string::npos ? std::string::npos : end - key - 4, "REDACTED");
             key = text.find("key=", key + 12);
+        }
+        // Google URLs carry the private key. Keep only the useful status/error,
+        // never the request path or query string, in development diagnostics.
+        size_t url = text.find("https://tile.googleapis.com/");
+        while (url != std::string::npos) {
+            size_t end = text.find_first_of("`' \n", url);
+            text.replace(url, end == std::string::npos ? std::string::npos : end - url, "Google tile URL omitted");
+            url = text.find("https://tile.googleapis.com/", url + 23);
         }
         NSLog(@"Cesium: %@", [NSString stringWithUTF8String:text.c_str()]);
     });
@@ -112,13 +144,6 @@ public:
                 NSLog(@"Google tile request failed: domain=%@ code=%ld", error.domain ?: @"unknown", (long)error.code);
             } else if (http.statusCode >= 400) {
                 NSLog(@"Google tile request failed: HTTP %ld (%lu bytes)", (long)http.statusCode, (unsigned long)data.length);
-            } else {
-                NSLog(@"Google tile request: HTTP %ld %@ (%lu bytes)",
-                      (long)http.statusCode, http.MIMEType ?: @"unknown", (unsigned long)data.length);
-                if ([http.MIMEType isEqualToString:@"model/gltf-binary"] && data.length >= 4) {
-                    const uint8_t *bytes = static_cast<const uint8_t *>(data.bytes);
-                    NSLog(@"Google GLB header: %02X %02X %02X %02X", bytes[0], bytes[1], bytes[2], bytes[3]);
-                }
             }
             assetRequest->setResponse(std::make_shared<AppleAssetResponse>(http ?: [[NSHTTPURLResponse alloc] init], data ?: [NSData data]));
             promise.resolve(assetRequest);
@@ -175,36 +200,125 @@ class StaticRendererPreparation final : public Cesium3DTilesSelection::IPrepareR
 public:
     CesiumAsync::Future<Cesium3DTilesSelection::TileLoadResultAndRenderResources> prepareInLoadThread(
         const CesiumAsync::AsyncSystem& asyncSystem, Cesium3DTilesSelection::TileLoadResult&& result,
-        const glm::dmat4&, const std::any&) override {
+        const glm::dmat4& tileTransform, const std::any&) override {
+        auto *resources = new TileRenderResources{};
         if (result.state == Cesium3DTilesSelection::TileLoadResultState::Success && std::holds_alternative<CesiumGltf::Model>(result.contentKind)) {
-            const CesiumGltf::Model& model = std::get<CesiumGltf::Model>(result.contentKind);
-            NSLog(@"Google glTF load-thread: meshes=%zu images=%zu extensions=%zu",
-                  model.meshes.size(), model.images.size(), model.extensionsUsed.size());
-            if (!model.meshes.empty() && !model.meshes.front().primitives.empty()) {
-                const CesiumGltf::MeshPrimitive& primitive = model.meshes.front().primitives.front();
-                std::string attributes;
-                for (const auto& [semantic, _] : primitive.attributes) {
-                    attributes += semantic + " ";
+            CesiumGltf::Model& model = std::get<CesiumGltf::Model>(result.contentKind);
+            NSMutableArray<CesiumPrimitivePayload *> *payloads = [NSMutableArray array];
+            // Fixed Milestone 4 local origin: London at 250 m WGS84 ellipsoid height.
+            const auto london = CesiumGeospatial::Cartographic::fromDegrees(-0.1278, 51.5074, 250.0);
+            const glm::dvec3 origin = CesiumGeospatial::Ellipsoid::WGS84.cartographicToCartesian(london);
+            const glm::dmat4 ecefToEnu = glm::inverse(CesiumGeospatial::GlobeTransforms::eastNorthUpToFixedFrame(origin));
+            // glTF vertex data is relative to the model's CESIUM_RTC centre. Cesium keeps
+            // that centre in the decoded model extension rather than folding it into the
+            // 3D Tiles tile transform passed to this callback.
+            const glm::dmat4 modelToEcef = CesiumGltfContent::GltfUtilities::applyGltfUpAxisTransform(
+                model,
+                CesiumGltfContent::GltfUtilities::applyRtcCenter(model, tileTransform));
+            model.forEachPrimitiveInScene(-1, [&](CesiumGltf::Model& gltf, CesiumGltf::Node&, CesiumGltf::Mesh&, CesiumGltf::MeshPrimitive& primitive, const glm::dmat4& nodeTransform) {
+                if (primitive.mode != CesiumGltf::MeshPrimitive::Mode::TRIANGLES) return;
+                const auto positionIt = primitive.attributes.find("POSITION");
+                if (positionIt == primitive.attributes.end() || primitive.indices < 0 || primitive.material < 0) return;
+                const CesiumGltf::Material *material = CesiumGltf::Model::getSafe(&gltf.materials, primitive.material);
+                if (!material || !material->pbrMetallicRoughness || !material->pbrMetallicRoughness->baseColorTexture) return;
+                const CesiumGltf::TextureInfo& baseColorTexture = *material->pbrMetallicRoughness->baseColorTexture;
+                // glTF chooses the UV set on TextureInfo. Google tiles observed so
+                // far use TEXCOORD_0, but selecting it here was an unsupported
+                // assumption and can sample deliberately unused black atlas regions.
+                const std::string textureCoordinateAttribute = "TEXCOORD_" + std::to_string(baseColorTexture.texCoord);
+                const auto uvIt = primitive.attributes.find(textureCoordinateAttribute);
+                if (uvIt == primitive.attributes.end()) return;
+                CesiumGltf::AccessorView<glm::vec3> positions(gltf, positionIt->second);
+                CesiumGltf::AccessorView<glm::vec2> uvs(gltf, uvIt->second);
+                if (positions.status() != CesiumGltf::AccessorViewStatus::Valid || uvs.status() != CesiumGltf::AccessorViewStatus::Valid || positions.size() != uvs.size()) return;
+                const CesiumGltf::Texture *texture = CesiumGltf::Model::getSafe(&gltf.textures, baseColorTexture.index);
+                const CesiumGltf::Image *image = texture ? CesiumGltf::Model::getSafe(&gltf.images, texture->source) : nullptr;
+                if (!image || !image->pAsset || image->pAsset->channels != 4 || image->pAsset->bytesPerChannel != 1) return;
+                NSMutableData *positionData = [NSMutableData dataWithLength:positions.size() * sizeof(float) * 3];
+                NSMutableData *uvData = [NSMutableData dataWithLength:uvs.size() * sizeof(float) * 2];
+                float *outPositions = static_cast<float *>(positionData.mutableBytes);
+                float *outUVs = static_cast<float *>(uvData.mutableBytes);
+                for (int64_t i = 0; i < positions.size(); ++i) {
+                    const glm::dvec4 ecef = modelToEcef * nodeTransform * glm::dvec4(positions[i], 1.0);
+                    const glm::dvec3 enu = glm::dvec3(ecefToEnu * ecef);
+                    // ENU (+east,+north,+up) maps to RealityKit (+x,+y,-z), preserving right-handed local space.
+                    outPositions[i * 3] = static_cast<float>(enu.x);
+                    outPositions[i * 3 + 1] = static_cast<float>(enu.z);
+                    outPositions[i * 3 + 2] = static_cast<float>(-enu.y);
+                    outUVs[i * 2] = uvs[i].x;
+                    outUVs[i * 2 + 1] = uvs[i].y;
                 }
-                NSLog(@"Google primitive: mode=%d indices=%d material=%d attributes=%@",
-                      primitive.mode, primitive.indices, primitive.material,
-                      [NSString stringWithUTF8String:attributes.c_str()]);
-            }
-            if (!model.images.empty() && model.images.front().pAsset) {
-                const CesiumImage::ImageAsset& image = *model.images.front().pAsset;
-                NSLog(@"Google image: %dx%d channels=%d bytesPerChannel=%d",
-                      image.width, image.height, image.channels, image.bytesPerChannel);
-            }
+                NSMutableData *indexData = [NSMutableData data];
+                const CesiumGltf::Accessor *indexAccessor = CesiumGltf::Model::getSafe(&gltf.accessors, primitive.indices);
+                if (!indexAccessor) return;
+                auto appendIndices = [&](auto view) {
+                    if (view.status() != CesiumGltf::AccessorViewStatus::Valid) return false;
+                    for (int64_t i = 0; i < view.size(); ++i) { uint32_t value = static_cast<uint32_t>(view[i]); [indexData appendBytes:&value length:sizeof(value)]; }
+                    return true;
+                };
+                bool validIndices = false;
+                if (indexAccessor->componentType == CesiumGltf::Accessor::ComponentType::UNSIGNED_BYTE) validIndices = appendIndices(CesiumGltf::AccessorView<uint8_t>(gltf, primitive.indices));
+                if (indexAccessor->componentType == CesiumGltf::Accessor::ComponentType::UNSIGNED_SHORT) validIndices = appendIndices(CesiumGltf::AccessorView<uint16_t>(gltf, primitive.indices));
+                if (indexAccessor->componentType == CesiumGltf::Accessor::ComponentType::UNSIGNED_INT) validIndices = appendIndices(CesiumGltf::AccessorView<uint32_t>(gltf, primitive.indices));
+                if (!validIndices) return;
+                const uint32_t *outputIndices = static_cast<const uint32_t *>(indexData.bytes);
+                const NSUInteger outputIndexCount = indexData.length / sizeof(uint32_t);
+                uint32_t maximumIndex = 0;
+                for (NSUInteger i = 0; i < outputIndexCount; ++i) {
+                    maximumIndex = std::max(maximumIndex, outputIndices[i]);
+                }
+                if (maximumIndex >= positions.size()) {
+                    return;
+                }
+                CesiumPrimitivePayload *payload = [CesiumPrimitivePayload new];
+                payload.positions = positionData;
+                payload.textureCoordinates = uvData;
+                payload.indices = indexData;
+                // Cesium may retain generated mip levels back-to-back in pixelData.
+                // RealityKit's single .mip upload must receive exactly the full-resolution
+                // image range, not the concatenated image asset.
+                size_t imageByteOffset = 0;
+                size_t imageByteLength = image->pAsset->pixelData.size();
+                if (!image->pAsset->mipPositions.empty()) {
+                    const CesiumImage::ImageAssetMipPosition& baseMip = image->pAsset->mipPositions.front();
+                    imageByteOffset = baseMip.byteOffset;
+                    imageByteLength = baseMip.byteSize;
+                }
+                const size_t expectedImageByteLength =
+                    static_cast<size_t>(image->pAsset->width) *
+                    static_cast<size_t>(image->pAsset->height) *
+                    static_cast<size_t>(image->pAsset->channels) *
+                    static_cast<size_t>(image->pAsset->bytesPerChannel);
+                if (imageByteLength != expectedImageByteLength ||
+                    imageByteOffset + imageByteLength > image->pAsset->pixelData.size()) return;
+                payload.rgbaImage = [NSData dataWithBytes:image->pAsset->pixelData.data() + imageByteOffset length:imageByteLength];
+                payload.imageWidth = image->pAsset->width;
+                payload.imageHeight = image->pAsset->height;
+                // glTF specifies culling per material. Do not force a culling mode:
+                // Google tiles may legitimately contain both single- and double-sided surfaces.
+                payload.doubleSided = material->doubleSided;
+                [payloads addObject:payload];
+            });
+            resources->primitives = payloads;
         }
         Cesium3DTilesSelection::TileLoadResultAndRenderResources prepared{std::move(result), nullptr};
+        prepared.pRenderResources = resources;
         return asyncSystem.createResolvedFuture(std::move(prepared));
     }
 
-    void* prepareInMainThread(Cesium3DTilesSelection::Tile&, void*) override {
-        NSLog(@"Google glTF main-thread preparation reached.");
-        return nullptr;
+    void* prepareInMainThread(Cesium3DTilesSelection::Tile& tile, void* loadThreadResources) override {
+        auto *resources = static_cast<TileRenderResources *>(loadThreadResources);
+        resources->identifier = [NSString stringWithFormat:@"%p", &tile];
+        return resources;
     }
-    void free(Cesium3DTilesSelection::Tile&, void*, void*) noexcept override {}
+    void free(Cesium3DTilesSelection::Tile&, void* loadThreadResources, void* mainThreadResources) noexcept override {
+        auto *resources = static_cast<TileRenderResources *>(mainThreadResources ?: loadThreadResources);
+        NSString *identifier = resources->identifier;
+        if (identifier && tileFreed) {
+            dispatch_async(dispatch_get_main_queue(), ^{ tileFreed(identifier); });
+        }
+        delete resources;
+    }
     void* prepareRasterInLoadThread(CesiumImage::ImageAsset&, const std::any&) override { return nullptr; }
     void* prepareRasterInMainThread(CesiumRasterOverlays::RasterOverlayTile&, void*) override { return nullptr; }
     void freeRaster(const CesiumRasterOverlays::RasterOverlayTile&, void*, void*) noexcept override {}
@@ -215,13 +329,18 @@ public:
 std::unique_ptr<Cesium3DTilesSelection::Tileset> tileset;
 
 Cesium3DTilesSelection::ViewState makeStaticLondonView() {
-    const auto london = CesiumGeospatial::Cartographic::fromDegrees(-0.1278, 51.5074, 100.0);
+    const auto london = CesiumGeospatial::Cartographic::fromDegrees(-0.1278, 51.5074, 250.0);
     const glm::dvec3 position = CesiumGeospatial::Ellipsoid::WGS84.cartographicToCartesian(london);
     const glm::dmat4 enu = CesiumGeospatial::GlobeTransforms::eastNorthUpToFixedFrame(position);
     const glm::dvec3 east(enu[0]), north(enu[1]), up(enu[2]);
-    const glm::dvec3 direction = glm::normalize(-0.2 * east + 0.55 * north - 0.81 * up);
+    // Fixed Milestone 4 proof view: nearly nadir so that the terrain directly
+    // below the physical viewer remains inside Cesium's static selection frustum.
+    // The small northward component keeps the initial London view usefully oblique.
+    const glm::dvec3 direction = glm::normalize(-0.1 * east + 0.2 * north - 0.975 * up);
     const glm::dvec3 cameraUp = glm::normalize(glm::cross(glm::cross(direction, north), direction));
-    return {position, direction, cameraUp, {2048.0, 2048.0}, 1.57, 1.22};
+    // This is a fixed proof view, not the headset's LOD view. A moderate
+    // virtual viewport keeps Google's renderer-request rate below its quota.
+    return {position, direction, cameraUp, {1024.0, 1024.0}, 1.57, 1.22};
 }
 
 } // namespace
@@ -290,10 +409,23 @@ Cesium3DTilesSelection::ViewState makeStaticLondonView() {
 }
 
 + (void)startStaticLondonTilesWithAPIKey:(NSString *)apiKey {
+    [self startStaticLondonTilesWithAPIKey:apiKey onTileReady:nil];
+}
+
++ (void)startStaticLondonTilesWithAPIKey:(NSString *)apiKey
+                             onTileReady:(void (^)(NSString *tileIdentifier, NSArray<CesiumPrimitivePayload *> *primitives))onTileReady {
+    [self startStaticLondonTilesWithAPIKey:apiKey onTileVisible:onTileReady onTileFreed:nil];
+}
+
++ (void)startStaticLondonTilesWithAPIKey:(NSString *)apiKey
+                           onTileVisible:(void (^)(NSString *tileIdentifier, NSArray<CesiumPrimitivePayload *> *primitives))onTileVisible
+                              onTileFreed:(void (^)(NSString *tileIdentifier))onTileFreed {
     if (apiKey.length == 0) {
         NSLog(@"Google Maps API key is empty. Add it to ignored Secrets.xcconfig.");
         return;
     }
+    tileReady = [onTileVisible copy];
+    tileFreed = [onTileFreed copy];
     Cesium3DTilesContent::registerAllTileContentTypes();
     Cesium3DTilesSelection::TilesetExternals externals{
         nullptr,
@@ -304,10 +436,15 @@ Cesium3DTilesSelection::ViewState makeStaticLondonView() {
     externals.pPrepareRendererResources = std::make_shared<StaticRendererPreparation>();
     externals.pLogger = makeSanitizedCesiumLogger();
     Cesium3DTilesSelection::TilesetOptions options;
-    options.maximumSimultaneousTileLoads = 2;
+    // This is a fixed, bounded London view. Four concurrent Google requests fill
+    // its selected coverage promptly without introducing a persistent cache.
+    options.maximumSimultaneousTileLoads = 4;
     options.preloadAncestors = false;
     options.preloadSiblings = false;
-    options.maximumScreenSpaceError = 64.0;
+    // Milestone 4 prioritises recognisable London geometry over streaming range.
+    // Four pixels is sufficient for the fixed proof view; the one-pixel/no-holes
+    // experiment did not change the black source regions.
+    options.maximumScreenSpaceError = 4.0;
     tileset = std::make_unique<Cesium3DTilesSelection::Tileset>(
         externals, "https://tile.googleapis.com/v1/3dtiles/root.json", options);
     NSLog(@"Google London tileset started.");
@@ -316,7 +453,20 @@ Cesium3DTilesSelection::ViewState makeStaticLondonView() {
 + (void)updateStaticLondonTiles {
     if (!tileset) return;
     tileset->getAsyncSystem().dispatchMainThreadTasks();
-    tileset->updateViewGroup(tileset->getDefaultViewGroup(), {makeStaticLondonView()}, 1.0f / 60.0f);
+    const Cesium3DTilesSelection::ViewUpdateResult& result =
+        tileset->updateViewGroup(tileset->getDefaultViewGroup(), {makeStaticLondonView()}, 1.0f / 60.0f);
+    for (const Cesium3DTilesSelection::Tile::ConstPointer& tile : result.tilesFadingOut) {
+        const Cesium3DTilesSelection::TileRenderContent *content = tile->getContent().getRenderContent();
+        auto *resources = content ? static_cast<TileRenderResources *>(content->getRenderResources()) : nullptr;
+        if (resources && resources->identifier && tileFreed) tileFreed(resources->identifier);
+    }
+    for (const Cesium3DTilesSelection::Tile::ConstPointer& tile : result.tilesToRenderThisFrame) {
+        const Cesium3DTilesSelection::TileRenderContent *content = tile->getContent().getRenderContent();
+        auto *resources = content ? static_cast<TileRenderResources *>(content->getRenderResources()) : nullptr;
+        if (resources && resources->identifier && resources->primitives.count > 0 && tileReady) {
+            tileReady(resources->identifier, resources->primitives);
+        }
+    }
     tileset->loadTiles();
 }
 

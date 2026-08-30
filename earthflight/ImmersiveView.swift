@@ -8,20 +8,38 @@ struct ImmersiveView: View {
 
     var body: some View {
         RealityView { content in
+            // Keep the Milestone 2 world available for diagnostics, but normal Milestone 4
+            // execution deliberately presents only the fixed Google location.
+            let showsSyntheticFlightWorld = false
             let worldRoot = makeSyntheticFlightWorld()
-            content.add(worldRoot)
+            let googleRenderer = GoogleTileRenderer()
+
+            if showsSyntheticFlightWorld {
+                content.add(worldRoot)
+            } else {
+                content.add(googleRenderer.earthRoot)
+            }
 
             let apiKey = Bundle.main.object(forInfoDictionaryKey: "GoogleMapsAPIKey") as? String ?? ""
-            CesiumBridge.startStaticLondonTiles(withAPIKey: apiKey)
+            CesiumBridge.startStaticLondonTiles(
+                withAPIKey: apiKey,
+                onTileVisible: { tileIdentifier, primitives in
+                    Task { @MainActor in
+                        await googleRenderer.install(primitives: primitives, for: tileIdentifier)
+                    }
+                },
+                onTileFreed: { tileIdentifier in
+                    googleRenderer.remove(tileIdentifier: tileIdentifier)
+                }
+            )
 
             let state = flightState
             let subscription = content.subscribe(to: SceneEvents.Update.self) { [weak state, weak worldRoot] event in
-                guard let state, let worldRoot else {
-                    return
-                }
-
                 CesiumBridge.updateStaticLondonTiles()
-                state.update(worldRoot: worldRoot, deltaTime: event.deltaTime)
+
+                if showsSyntheticFlightWorld, let state, let worldRoot {
+                    state.update(worldRoot: worldRoot, deltaTime: event.deltaTime)
+                }
             }
             state.keepAlive(subscription)
         }

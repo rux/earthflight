@@ -1,0 +1,55 @@
+diff --git a/vcpkg.json b/vcpkg.json
+index 7ef7ecdf..00f1da8c 100644
+--- a/vcpkg.json
++++ b/vcpkg.json
+@@ -39,13 +39,13 @@
+       "features": [
+         {
+           "name": "jit",
+-          "platform": "!ios&!wasm32"
++          "platform": "!ios&!visionos&!wasm32"
+         }
+       ]
+     },
+     {
+       "name": "asmjit",
+-      "platform": "!ios&!wasm32"
++      "platform": "!ios&!visionos&!wasm32"
+     },
+     "spz",
+     "zlib"
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 8b727f94..020a6b5d 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -132,7 +132,7 @@ set(PACKAGES_PRIVATE
+ )
+ 
+ # asmjit needed by blend2d on non-iOS platforms (iOS and Wasm don't support JIT)
+-if(NOT CESIUM_TARGET_WASM AND NOT IOS AND NOT VCPKG_CMAKE_SYSTEM_NAME MATCHES "iOS")
++if(NOT CESIUM_TARGET_WASM AND NOT IOS AND NOT CMAKE_SYSTEM_NAME MATCHES "iOS|visionOS" AND NOT VCPKG_CMAKE_SYSTEM_NAME MATCHES "iOS|visionOS")
+     list(APPEND PACKAGES_PRIVATE blend2d asmjit)
+ else()
+     # Use [core] feature to disable default jit feature.
+@@ -406,7 +406,7 @@ find_package(zlib-ng CONFIG REQUIRED)
+ 
+ # asmjit should not be included with iOS or Wasm builds as they don't support JIT compilation.
+-if(NOT CESIUM_TARGET_WASM AND NOT IOS AND NOT VCPKG_CMAKE_SYSTEM_NAME MATCHES "iOS")
++if(NOT CESIUM_TARGET_WASM AND NOT IOS AND NOT CMAKE_SYSTEM_NAME MATCHES "iOS|visionOS" AND NOT VCPKG_CMAKE_SYSTEM_NAME MATCHES "iOS|visionOS")
+     find_package(asmjit CONFIG REQUIRED)
+ endif()
+ 
+ if(NOT CESIUM_DISABLE_CURL)
+diff --git a/CesiumVectorData/CMakeLists.txt b/CesiumVectorData/CMakeLists.txt
+index 52be15e1..cba9427e 100644
+--- a/CesiumVectorData/CMakeLists.txt
++++ b/CesiumVectorData/CMakeLists.txt
+@@ -44,7 +44,7 @@
+         ${CMAKE_CURRENT_LIST_DIR}/src
+ )
+ 
+-if(NOT CESIUM_TARGET_WASM AND NOT IOS AND NOT VCPKG_CMAKE_SYSTEM_NAME MATCHES "iOS")
++if(NOT CESIUM_TARGET_WASM AND NOT IOS AND NOT CMAKE_SYSTEM_NAME MATCHES "iOS|visionOS" AND NOT VCPKG_CMAKE_SYSTEM_NAME MATCHES "iOS|visionOS")
+     set(CESIUM_VECTOR_DATA_ASMJIT_DEPENDENCY asmjit::asmjit)
+ endif()
+ 

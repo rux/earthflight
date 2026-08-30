@@ -193,6 +193,20 @@ Do not expose Cesium template-heavy types throughout Swift.
 
 Do not attempt to turn the bridge into a reusable mapping library.
 
+### Toolchain transitions
+
+After changing Xcode or visionOS versions, especially when moving from a beta
+toolchain to a release toolchain:
+
+1. do not reuse Cesium Native, vcpkg or other native binaries produced by theprevious Xcode toolchain;
+2. confirm that `DEVELOPER_DIR` selects the intended full Xcode installation, not `/Library/Developer/CommandLineTools`;
+3. rebuild the project-local native dependencies from their pinned source revisions;
+4. rebuild Earthflight;
+5. repeat the current milestone's physical-headset smoke test before beginning the next milestone;
+6. update the recorded known-good Xcode, SDK, compiler and native-build details.
+
+Do not add compatibility layers for old beta toolchains. Support the currentlyinstalled authoritative toolchain.
+
 ### Apple frameworks
 
 Use:
@@ -507,6 +521,23 @@ Work on one milestone at a time.
 * Pin a known working revision.
 * Validate one simple glTF or isolated tile conversion.
 * No broad refactor.
+
+After the first successful physical-device Cesium build, create or update a short tracked `BUILDING.md` recording facts rather than plans:
+
+- exact Cesium Native commit;
+- exact vcpkg commit, if used;
+- Xcode version and build number;
+- visionOS SDK version;
+- Clang version;
+- deployment target;
+- selected `DEVELOPER_DIR` convention;
+- complete configure and build commands;
+- required CMake options;
+- any local patches;
+- physical-device smoke-test result.
+
+Do not document transient failed experiments unless they explain a necessary
+non-obvious workaround.
 
 ### Milestone 4 — Static Google location
 

@@ -1,0 +1,6 @@
+[submodule "ThirdParty/cesium-native"]
+	path = ThirdParty/cesium-native
+	url = https://github.com/CesiumGS/cesium-native.git
+[submodule "ThirdParty/vcpkg"]
+	path = ThirdParty/vcpkg
+	url = https://github.com/microsoft/vcpkg.git

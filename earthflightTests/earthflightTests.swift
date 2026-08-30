@@ -79,4 +79,17 @@ struct EarthflightTests {
         #expect(defaultRole == "UISceneSessionRoleImmersiveSpaceApplication")
         #expect(gameControllerProfiles?.contains { $0["ProfileName"] as? String == "Extended" } == true)
     }
+
+    @Test("Cesium Native converts the WGS84 equator to ECEF")
+    func cesiumNativeSmokeTest() {
+        #expect(CesiumBridge.runSmokeTest().hasPrefix("Cesium Native smoke test: OK"))
+    }
+
+    @Test("Cesium Native round-trips a real WGS84 location through ECEF")
+    func cesiumNativeCartographicRoundTrip() {
+        #expect(
+            CesiumBridge.runCartographicRoundTripSmokeTest() ==
+                "Cesium Native cartographic round-trip: OK"
+        )
+    }
 }

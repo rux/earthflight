@@ -121,4 +121,20 @@ struct EarthflightTests {
     func londonLocalFrame() {
         #expect(CesiumBridge.runLondonLocalFrameSmokeTest() == "London local ENU frame: OK")
     }
+
+    @Test("glTF texture transforms are applied before RealityKit's V conversion")
+    func gltfTextureCoordinateConversion() {
+        let converted = CesiumBridge.realityKitTextureCoordinateForTesting(
+            withU: 0.2,
+            v: 0.4,
+            offsetU: 0.3,
+            offsetV: 0.4,
+            scaleU: 0.5,
+            scaleV: 0.25,
+            rotation: .pi / 2
+        )
+
+        #expect(abs(converted[0].doubleValue - 0.4) < 0.000001)
+        #expect(abs(converted[1].doubleValue - 0.7) < 0.000001)
+    }
 }

@@ -7,6 +7,8 @@
 #include <Cesium3DTilesSelection/TileContent.h>
 #include <Cesium3DTilesSelection/ViewState.h>
 #include <CesiumGltf/AccessorView.h>
+#include <CesiumGltf/ExtensionKhrTextureTransform.h>
+#include <CesiumGltf/KhrTextureTransform.h>
 #include <CesiumGltfContent/GltfUtilities.h>
 #include <CesiumAsync/IAssetAccessor.h>
 #include <CesiumAsync/IAssetRequest.h>
@@ -15,13 +17,18 @@
 #include <CesiumGeospatial/Cartographic.h>
 #include <CesiumGeospatial/Ellipsoid.h>
 #include <CesiumGeospatial/GlobeTransforms.h>
+#include <CesiumUtility/CreditSystem.h>
 
+#include <algorithm>
 #include <cmath>
 #include <dispatch/dispatch.h>
 #include <glm/geometric.hpp>
+#include <glm/gtc/matrix_inverse.hpp>
+#include <limits>
 #include <optional>
 #include <spdlog/sinks/null_sink.h>
 #include <spdlog/sinks/callback_sink.h>
+#include <type_traits>
 #include <variant>
 
 @interface CesiumPrimitivePayload ()
@@ -31,6 +38,10 @@
 @property (nonatomic, readwrite) NSData *rgbaImage;
 @property (nonatomic, readwrite) NSInteger imageWidth;
 @property (nonatomic, readwrite) NSInteger imageHeight;
+@property (nonatomic, readwrite) NSInteger samplerWrapS;
+@property (nonatomic, readwrite) NSInteger samplerWrapT;
+@property (nonatomic, readwrite) NSInteger samplerMinFilter;
+@property (nonatomic, readwrite) NSInteger samplerMagFilter;
 @property (nonatomic, readwrite) BOOL doubleSided;
 @end
 
@@ -41,6 +52,13 @@ namespace {
 
 void (^tileReady)(NSString *, NSArray<CesiumPrimitivePayload *> *);
 void (^tileFreed)(NSString *);
+void (^attributionChanged)(NSString *);
+std::shared_ptr<CesiumUtility::CreditSystem> creditSystem;
+std::string lastAttribution;
+
+// Low fixed Milestone 4 London viewpoint. Keep this identical for Cesium's
+// selection camera and the RealityKit local ENU origin.
+constexpr double staticLondonEllipsoidHeightMeters = 120.0;
 
 struct TileRenderResources {
     __strong NSString *identifier;
@@ -55,6 +73,68 @@ public:
 };
 
 std::string decorateGoogleURL(const std::string& url, NSString *apiKey);
+
+template <typename T> double normalizedComponent(T value) {
+    if constexpr (std::is_floating_point_v<T>) {
+        return static_cast<double>(value);
+    } else if constexpr (std::is_unsigned_v<T>) {
+        return static_cast<double>(value) / static_cast<double>(std::numeric_limits<T>::max());
+    } else {
+        return std::max(
+            static_cast<double>(value) / static_cast<double>(std::numeric_limits<T>::max()),
+            -1.0);
+    }
+}
+
+template <typename T>
+bool decodeUVs(
+    const CesiumGltf::Model& model,
+    int32_t accessorIndex,
+    bool normalized,
+    std::vector<glm::dvec2>& output) {
+    CesiumGltf::AccessorView<CesiumGltf::AccessorTypes::VEC2<T>> view(model, accessorIndex);
+    if (view.status() != CesiumGltf::AccessorViewStatus::Valid) return false;
+    output.resize(static_cast<size_t>(view.size()));
+    for (int64_t i = 0; i < view.size(); ++i) {
+        const auto& value = view[i].value;
+        if (normalized) {
+            output[static_cast<size_t>(i)] = glm::dvec2(
+                normalizedComponent(value[0]),
+                normalizedComponent(value[1]));
+        } else {
+            output[static_cast<size_t>(i)] = glm::dvec2(value[0], value[1]);
+        }
+    }
+    return true;
+}
+
+bool decodeUVs(
+    const CesiumGltf::Model& model,
+    int32_t accessorIndex,
+    std::vector<glm::dvec2>& output) {
+    const CesiumGltf::Accessor *accessor = CesiumGltf::Model::getSafe(&model.accessors, accessorIndex);
+    if (!accessor || accessor->type != CesiumGltf::Accessor::Type::VEC2) return false;
+    switch (accessor->componentType) {
+        case CesiumGltf::Accessor::ComponentType::BYTE:
+            return decodeUVs<int8_t>(model, accessorIndex, accessor->normalized, output);
+        case CesiumGltf::Accessor::ComponentType::UNSIGNED_BYTE:
+            return decodeUVs<uint8_t>(model, accessorIndex, accessor->normalized, output);
+        case CesiumGltf::Accessor::ComponentType::SHORT:
+            return decodeUVs<int16_t>(model, accessorIndex, accessor->normalized, output);
+        case CesiumGltf::Accessor::ComponentType::UNSIGNED_SHORT:
+            return decodeUVs<uint16_t>(model, accessorIndex, accessor->normalized, output);
+        case CesiumGltf::Accessor::ComponentType::FLOAT:
+            return decodeUVs<float>(model, accessorIndex, false, output);
+        default:
+            return false;
+    }
+}
+
+glm::dvec2 realityKitTextureCoordinate(const glm::dvec2& gltfTextureCoordinate) {
+    // glTF defines (0, 0) at the upper-left of the image. RealityKit's
+    // generated-mesh / built-in-material path uses the USD-style V convention.
+    return {gltfTextureCoordinate.x, 1.0 - gltfTextureCoordinate.y};
+}
 
 std::shared_ptr<spdlog::logger> makeSanitizedCesiumLogger() {
     auto logger = spdlog::callback_logger_mt("EarthflightCesium", [](const spdlog::details::log_msg& message) {
@@ -205,8 +285,11 @@ public:
         if (result.state == Cesium3DTilesSelection::TileLoadResultState::Success && std::holds_alternative<CesiumGltf::Model>(result.contentKind)) {
             CesiumGltf::Model& model = std::get<CesiumGltf::Model>(result.contentKind);
             NSMutableArray<CesiumPrimitivePayload *> *payloads = [NSMutableArray array];
-            // Fixed Milestone 4 local origin: London at 250 m WGS84 ellipsoid height.
-            const auto london = CesiumGeospatial::Cartographic::fromDegrees(-0.1278, 51.5074, 250.0);
+            // Fixed Milestone 4 local origin in WGS84 ellipsoid metres.
+            const auto london = CesiumGeospatial::Cartographic::fromDegrees(
+                -0.1278,
+                51.5074,
+                staticLondonEllipsoidHeightMeters);
             const glm::dvec3 origin = CesiumGeospatial::Ellipsoid::WGS84.cartographicToCartesian(london);
             const glm::dmat4 ecefToEnu = glm::inverse(CesiumGeospatial::GlobeTransforms::eastNorthUpToFixedFrame(origin));
             // glTF vertex data is relative to the model's CESIUM_RTC centre. Cesium keeps
@@ -222,15 +305,27 @@ public:
                 const CesiumGltf::Material *material = CesiumGltf::Model::getSafe(&gltf.materials, primitive.material);
                 if (!material || !material->pbrMetallicRoughness || !material->pbrMetallicRoughness->baseColorTexture) return;
                 const CesiumGltf::TextureInfo& baseColorTexture = *material->pbrMetallicRoughness->baseColorTexture;
-                // glTF chooses the UV set on TextureInfo. Google tiles observed so
-                // far use TEXCOORD_0, but selecting it here was an unsupported
-                // assumption and can sample deliberately unused black atlas regions.
-                const std::string textureCoordinateAttribute = "TEXCOORD_" + std::to_string(baseColorTexture.texCoord);
+                const CesiumGltf::ExtensionKhrTextureTransform *textureTransformExtension =
+                    baseColorTexture.getExtension<CesiumGltf::ExtensionKhrTextureTransform>();
+                const CesiumGltf::KhrTextureTransform textureTransform = textureTransformExtension
+                    ? CesiumGltf::KhrTextureTransform(*textureTransformExtension)
+                    : CesiumGltf::KhrTextureTransform();
+                // KHR_texture_transform may override TextureInfo.texCoord. Decode
+                // the selected accessor according to its declared component type,
+                // normalization, offsets, and stride before applying the transform.
+                const int64_t effectiveTexCoord =
+                    textureTransformExtension && textureTransformExtension->texCoord
+                        ? *textureTransformExtension->texCoord
+                        : baseColorTexture.texCoord;
+                const std::string textureCoordinateAttribute =
+                    "TEXCOORD_" + std::to_string(effectiveTexCoord);
                 const auto uvIt = primitive.attributes.find(textureCoordinateAttribute);
                 if (uvIt == primitive.attributes.end()) return;
                 CesiumGltf::AccessorView<glm::vec3> positions(gltf, positionIt->second);
-                CesiumGltf::AccessorView<glm::vec2> uvs(gltf, uvIt->second);
-                if (positions.status() != CesiumGltf::AccessorViewStatus::Valid || uvs.status() != CesiumGltf::AccessorViewStatus::Valid || positions.size() != uvs.size()) return;
+                std::vector<glm::dvec2> uvs;
+                if (positions.status() != CesiumGltf::AccessorViewStatus::Valid ||
+                    !decodeUVs(gltf, uvIt->second, uvs) ||
+                    static_cast<size_t>(positions.size()) != uvs.size()) return;
                 const CesiumGltf::Texture *texture = CesiumGltf::Model::getSafe(&gltf.textures, baseColorTexture.index);
                 const CesiumGltf::Image *image = texture ? CesiumGltf::Model::getSafe(&gltf.images, texture->source) : nullptr;
                 if (!image || !image->pAsset || image->pAsset->channels != 4 || image->pAsset->bytesPerChannel != 1) return;
@@ -242,11 +337,18 @@ public:
                     const glm::dvec4 ecef = modelToEcef * nodeTransform * glm::dvec4(positions[i], 1.0);
                     const glm::dvec3 enu = glm::dvec3(ecefToEnu * ecef);
                     // ENU (+east,+north,+up) maps to RealityKit (+x,+y,-z), preserving right-handed local space.
-                    outPositions[i * 3] = static_cast<float>(enu.x);
-                    outPositions[i * 3 + 1] = static_cast<float>(enu.z);
-                    outPositions[i * 3 + 2] = static_cast<float>(-enu.y);
-                    outUVs[i * 2] = uvs[i].x;
-                    outUVs[i * 2 + 1] = uvs[i].y;
+                    const glm::dvec3 realityPosition(enu.x, enu.z, -enu.y);
+                    outPositions[i * 3] = static_cast<float>(realityPosition.x);
+                    outPositions[i * 3 + 1] = static_cast<float>(realityPosition.y);
+                    outPositions[i * 3 + 2] = static_cast<float>(realityPosition.z);
+                    const glm::dvec2 uv = textureTransformExtension
+                        ? textureTransform.applyTransform(uvs[static_cast<size_t>(i)].x, uvs[static_cast<size_t>(i)].y)
+                        : uvs[static_cast<size_t>(i)];
+                    // Convert only after applying KHR_texture_transform because the
+                    // extension itself is defined in glTF's upper-left UV space.
+                    const glm::dvec2 realityKitUV = realityKitTextureCoordinate(uv);
+                    outUVs[i * 2] = static_cast<float>(realityKitUV.x);
+                    outUVs[i * 2 + 1] = static_cast<float>(realityKitUV.y);
                 }
                 NSMutableData *indexData = [NSMutableData data];
                 const CesiumGltf::Accessor *indexAccessor = CesiumGltf::Model::getSafe(&gltf.accessors, primitive.indices);
@@ -294,6 +396,20 @@ public:
                 payload.rgbaImage = [NSData dataWithBytes:image->pAsset->pixelData.data() + imageByteOffset length:imageByteLength];
                 payload.imageWidth = image->pAsset->width;
                 payload.imageHeight = image->pAsset->height;
+                const CesiumGltf::Sampler *sampler =
+                    CesiumGltf::Model::getSafe(&gltf.samplers, texture->sampler);
+                payload.samplerWrapS = sampler
+                    ? sampler->wrapS
+                    : CesiumGltf::Sampler::WrapS::REPEAT;
+                payload.samplerWrapT = sampler
+                    ? sampler->wrapT
+                    : CesiumGltf::Sampler::WrapT::REPEAT;
+                payload.samplerMinFilter = sampler && sampler->minFilter
+                    ? *sampler->minFilter
+                    : CesiumGltf::Sampler::MinFilter::LINEAR_MIPMAP_LINEAR;
+                payload.samplerMagFilter = sampler && sampler->magFilter
+                    ? *sampler->magFilter
+                    : CesiumGltf::Sampler::MagFilter::LINEAR;
                 // glTF specifies culling per material. Do not force a culling mode:
                 // Google tiles may legitimately contain both single- and double-sided surfaces.
                 payload.doubleSided = material->doubleSided;
@@ -329,17 +445,18 @@ public:
 std::unique_ptr<Cesium3DTilesSelection::Tileset> tileset;
 
 Cesium3DTilesSelection::ViewState makeStaticLondonView() {
-    const auto london = CesiumGeospatial::Cartographic::fromDegrees(-0.1278, 51.5074, 250.0);
+    const auto london = CesiumGeospatial::Cartographic::fromDegrees(
+        -0.1278,
+        51.5074,
+        staticLondonEllipsoidHeightMeters);
     const glm::dvec3 position = CesiumGeospatial::Ellipsoid::WGS84.cartographicToCartesian(london);
     const glm::dmat4 enu = CesiumGeospatial::GlobeTransforms::eastNorthUpToFixedFrame(position);
     const glm::dvec3 east(enu[0]), north(enu[1]), up(enu[2]);
-    // Fixed Milestone 4 proof view: nearly nadir so that the terrain directly
-    // below the physical viewer remains inside Cesium's static selection frustum.
-    // The small northward component keeps the initial London view usefully oblique.
-    const glm::dvec3 direction = glm::normalize(-0.1 * east + 0.2 * north - 0.975 * up);
+    // Look obliquely northwest across central London so the static proof view
+    // contains both nearby geometry and progressively coarser horizon tiles.
+    const glm::dvec3 direction = glm::normalize(-0.15 * east + 0.75 * north - 0.65 * up);
     const glm::dvec3 cameraUp = glm::normalize(glm::cross(glm::cross(direction, north), direction));
-    // This is a fixed proof view, not the headset's LOD view. A moderate
-    // virtual viewport keeps Google's renderer-request rate below its quota.
+    // This is a fixed proof view, not yet the headset-driven Milestone 5 view.
     return {position, direction, cameraUp, {1024.0, 1024.0}, 1.57, 1.22};
 }
 
@@ -392,6 +509,22 @@ Cesium3DTilesSelection::ViewState makeStaticLondonView() {
     return [NSString stringWithUTF8String:decorateGoogleURL(url.UTF8String, apiKey).c_str()];
 }
 
++ (NSArray<NSNumber *> *)realityKitTextureCoordinateForTestingWithU:(double)u
+                                                                  v:(double)v
+                                                            offsetU:(double)offsetU
+                                                            offsetV:(double)offsetV
+                                                             scaleU:(double)scaleU
+                                                             scaleV:(double)scaleV
+                                                           rotation:(double)rotation {
+    CesiumGltf::ExtensionKhrTextureTransform extension;
+    extension.offset = {offsetU, offsetV};
+    extension.scale = {scaleU, scaleV};
+    extension.rotation = rotation;
+    const glm::dvec2 transformed = CesiumGltf::KhrTextureTransform(extension).applyTransform(u, v);
+    const glm::dvec2 converted = realityKitTextureCoordinate(transformed);
+    return @[@(converted.x), @(converted.y)];
+}
+
 + (NSString *)runLondonLocalFrameSmokeTest {
     // ECEF is double precision. The local ENU origin must map exactly to zero before
     // any eventual conversion to RealityKit's metre-scale Float transforms.
@@ -414,18 +547,24 @@ Cesium3DTilesSelection::ViewState makeStaticLondonView() {
 
 + (void)startStaticLondonTilesWithAPIKey:(NSString *)apiKey
                              onTileReady:(void (^)(NSString *tileIdentifier, NSArray<CesiumPrimitivePayload *> *primitives))onTileReady {
-    [self startStaticLondonTilesWithAPIKey:apiKey onTileVisible:onTileReady onTileFreed:nil];
+    [self startStaticLondonTilesWithAPIKey:apiKey
+                             onTileVisible:onTileReady
+                                onTileFreed:nil
+                      onAttributionChanged:nil];
 }
 
 + (void)startStaticLondonTilesWithAPIKey:(NSString *)apiKey
                            onTileVisible:(void (^)(NSString *tileIdentifier, NSArray<CesiumPrimitivePayload *> *primitives))onTileVisible
-                              onTileFreed:(void (^)(NSString *tileIdentifier))onTileFreed {
+                              onTileFreed:(void (^)(NSString *tileIdentifier))onTileFreed
+                    onAttributionChanged:(void (^)(NSString *attribution))onAttributionChanged {
     if (apiKey.length == 0) {
         NSLog(@"Google Maps API key is empty. Add it to ignored Secrets.xcconfig.");
         return;
     }
     tileReady = [onTileVisible copy];
     tileFreed = [onTileFreed copy];
+    attributionChanged = [onAttributionChanged copy];
+    lastAttribution.clear();
     Cesium3DTilesContent::registerAllTileContentTypes();
     Cesium3DTilesSelection::TilesetExternals externals{
         nullptr,
@@ -435,19 +574,19 @@ Cesium3DTilesSelection::ViewState makeStaticLondonView() {
     externals.pAssetAccessor = std::make_shared<GoogleAssetAccessor>(std::make_shared<AppleAssetAccessor>(), apiKey);
     externals.pPrepareRendererResources = std::make_shared<StaticRendererPreparation>();
     externals.pLogger = makeSanitizedCesiumLogger();
+    creditSystem = std::make_shared<CesiumUtility::CreditSystem>();
+    externals.pCreditSystem = creditSystem;
     Cesium3DTilesSelection::TilesetOptions options;
     // This is a fixed, bounded London view. Four concurrent Google requests fill
     // its selected coverage promptly without introducing a persistent cache.
     options.maximumSimultaneousTileLoads = 4;
     options.preloadAncestors = false;
     options.preloadSiblings = false;
-    // Milestone 4 prioritises recognisable London geometry over streaming range.
-    // Four pixels is sufficient for the fixed proof view; the one-pixel/no-holes
-    // experiment did not change the black source regions.
+    // Four pixels gives the static proof view recognisable nearby geometry while
+    // Cesium keeps distant tiles progressively coarser by screen-space error.
     options.maximumScreenSpaceError = 4.0;
     tileset = std::make_unique<Cesium3DTilesSelection::Tileset>(
         externals, "https://tile.googleapis.com/v1/3dtiles/root.json", options);
-    NSLog(@"Google London tileset started.");
 }
 
 + (void)updateStaticLondonTiles {
@@ -465,6 +604,18 @@ Cesium3DTilesSelection::ViewState makeStaticLondonView() {
         auto *resources = content ? static_cast<TileRenderResources *>(content->getRenderResources()) : nullptr;
         if (resources && resources->identifier && resources->primitives.count > 0 && tileReady) {
             tileReady(resources->identifier, resources->primitives);
+        }
+    }
+    if (creditSystem && attributionChanged) {
+        const CesiumUtility::CreditsSnapshot& snapshot = creditSystem->getSnapshot();
+        std::string currentAttribution;
+        for (const CesiumUtility::Credit& credit : snapshot.currentCredits) {
+            if (!currentAttribution.empty()) currentAttribution += " · ";
+            currentAttribution += creditSystem->getHtml(credit);
+        }
+        if (currentAttribution != lastAttribution) {
+            lastAttribution = currentAttribution;
+            attributionChanged([NSString stringWithUTF8String:lastAttribution.c_str()]);
         }
     }
     tileset->loadTiles();

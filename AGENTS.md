@@ -49,15 +49,17 @@ A crash followed by fixing the defect and relaunching is acceptable.
 
 Do not add user-facing recovery flows, controller-selection UI, retry frameworks, diagnostics dashboards, settings screens or defensive machinery for configurations that do not exist.
 
-### Explicitly prohibited unless the owner later asks for them (some tests will certainly be requested from time to time)
+### Explicitly prohibited unless the owner later asks for them
+
+Tests are opt-in. Do not add or expand tests unless the owner explicitly requests them. When requested, add the smallest focused regression test to the existing test target. Do not create another test target, fixtures, mocks or test architecture unless the owner specifically asks for those too.
 
 Do not create:
 
-* unit tests;
-* UI tests;
-* Swift Testing or XCTest targets;
-* test fixtures;
-* mocks;
+* unrequested unit tests;
+* unrequested UI tests;
+* additional Swift Testing or XCTest targets;
+* unrequested test fixtures;
+* unrequested mocks;
 * snapshot tests;
 * CI;
 * dependency-injection containers;
@@ -198,14 +200,14 @@ Do not attempt to turn the bridge into a reusable mapping library.
 After changing Xcode or visionOS versions, especially when moving from a beta
 toolchain to a release toolchain:
 
-1. do not reuse Cesium Native, vcpkg or other native binaries produced by theprevious Xcode toolchain;
+1. do not reuse Cesium Native, vcpkg or other native binaries produced by the previous Xcode toolchain;
 2. confirm that `DEVELOPER_DIR` selects the intended full Xcode installation, not `/Library/Developer/CommandLineTools`;
 3. rebuild the project-local native dependencies from their pinned source revisions;
 4. rebuild Earthflight;
 5. repeat the current milestone's physical-headset smoke test before beginning the next milestone;
 6. update the recorded known-good Xcode, SDK, compiler and native-build details.
 
-Do not add compatibility layers for old beta toolchains. Support the currentlyinstalled authoritative toolchain.
+Do not add compatibility layers for old beta toolchains. Support the currently installed authoritative toolchain.
 
 ### Apple frameworks
 
@@ -266,6 +268,32 @@ Do not rediscover these from first principles:
 * The previous visionOS implementation solved a location-height offset with an EGM96/geoid-to-ellipsoid correction.
 * Test glTF-to-RealityKit conversion with one simple known model or one isolated tile before streaming a city.
 * The most useful early renderer check is a distant/global view or one static tile, not full-speed flight.
+
+### Settled glTF-to-RealityKit renderer contract
+
+Milestone 4 established a correct RealityKit renderer for Google Photorealistic 3D Tiles. Treat the following as settled implementation constraints, not areas for renewed experimentation:
+
+* glTF texture coordinates use an upper-left image origin. Apply `KHR_texture_transform` in glTF texture-coordinate space first, then convert for RealityKit with `v = 1 - v`.
+* Do not add another UV flip and do not flip decoded image rows.
+* Honour `TextureInfo.texCoord` and any `KHR_texture_transform.texCoord` override.
+* Decode texture-coordinate accessors according to their declared component type and normalisation. Preserve accessor byte offsets, buffer-view byte offsets and byte strides through Cesium's accessor views.
+* Preserve the supported unsigned-byte, unsigned-short and unsigned-int index paths.
+* Upload only the full-resolution base mip when Cesium stores multiple mip levels back-to-back in an image asset.
+* Configure RealityKit sampler address, minification, magnification and mip-filter modes from the glTF sampler rather than relying on RealityKit defaults.
+* Honour glTF `doubleSided` through RealityKit face culling.
+* Preserve the existing node, model, RTC, ECEF and local-ENU transform order. Keep global calculations in double precision and convert to `Float` only for the final local RealityKit vertex payload.
+* Preserve the renderer's asynchronous tile-generation guard. A tile removed while RealityKit resources are being prepared must not be installed afterward.
+
+If later work produces a visual regression, first determine which of these established contracts was broken. Do not speculate that Google geometry, skirts, imagery or Cesium LOD is defective without new evidence that the validated importer contract still holds.
+
+### Settled selection and LOD behavior
+
+Cesium already performs view-dependent selection, frustum culling and screen-space-error refinement. Nearby tiles refine while distant tiles remain progressively coarser and may appear nearly flat. Broad low-detail horizon coverage is expected.
+
+* Do not manually classify tiles by distance or implement a second LOD system.
+* `maximumScreenSpaceError` controls refinement quality. `maximumSimultaneousTileLoads` limits concurrent loading, not the number of visible or cached tiles.
+* Loaded or cached content is not automatically visible content. Continue showing only `tilesToRenderThisFrame` and hiding `tilesFadingOut`.
+* Do not tune SSE, preload behavior, cache limits or load concurrency merely because the selected geographic area is broad. Change them only in response to measured frame time, memory pressure, loading behavior or visible LOD defects on the physical headset.
 
 Research the current upstream APIs where names or build requirements have changed. Prefer current official Apple, Google and Cesium documentation and current upstream source.
 
@@ -427,6 +455,10 @@ The application must show:
 
 Google’s tile attribution may appear in glTF `asset.copyright`. Do not assume one static copyright string is sufficient. Aggregate and update attribution from visible content as required by the current policy.
 
+Use Cesium Native's `CreditSystem` snapshot as the source of dynamic data attribution. It already aggregates the credits associated with the current render set. Display its unique sorted current credits in full without deliberate truncation.
+
+Use Google's official, unmodified outlined Google Maps logo over the rendered imagery at a height within Google's required 16–19 point range. Keep the logo and current data attribution visibly associated and persistently visible. Do not replace the official asset with recreated text or artwork while the asset remains usable.
+
 Do not build an offline city exporter or custom persistent tile archive.
 
 A bounded transient Cesium cache needed for normal interactive streaming is acceptable. No custom long-term cache is required.
@@ -555,6 +587,20 @@ non-obvious workaround.
 * Head-relative view included in LOD selection.
 * Bounded resource use.
 
+Milestone 5 begins from the validated Milestone 4 renderer and Cesium selection pipeline. Do not redesign the importer, texture path, material path or tile-selection machinery.
+
+Replace the fixed Milestone 4 `ViewState` input with one centre-eye Cesium view derived from the combined craft pose and the current head pose relative to the craft. The head-relative pose affects only the rendered view and Cesium selection; it must never mutate craft orientation, velocity or flight direction.
+
+Keep three representations coherent on every update:
+
+1. the craft's persistent global ECEF/cartographic pose in double precision;
+2. the combined craft-plus-head global view supplied to Cesium;
+3. the inverse local transform applied to the RealityKit Earth/content root while the system camera remains head-controlled.
+
+A mismatch between the Cesium selection pose and the RealityKit rendered pose causes inappropriate refinement, missing nearby detail and excessive off-screen loading. Treat pose coherence as the first diagnostic when dynamic streaming looks wrong.
+
+Continue dispatching Cesium main-thread tasks before each view update. Preserve tile visibility semantics, asynchronous generation cancellation and current-render-set attribution while the selection changes every frame.
+
 ### Milestone 6 — Planetary coordinates
 
 * Robust local tangent frame.
@@ -597,8 +643,8 @@ During editing:
 
 * Make the smallest coherent change.
 * Keep unrelated formatting and project-setting churn out of the diff.
-* Do not add tests unless requested
-- Do not delete tests that already exist
+* Do not add tests unless requested. When requested, prefer one focused regression test in the existing target.
+* Do not delete tests that already exist.
 * Do not add dependencies without explaining why the current milestone cannot proceed without them.
 * Do not introduce abstractions in preparation for later milestones.
 * Build after meaningful changes.

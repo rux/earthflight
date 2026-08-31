@@ -1,5 +1,6 @@
 import RealityKit
 import UIKit
+import Metal
 
 @MainActor
 final class GoogleTileRenderer {
@@ -34,7 +35,6 @@ final class GoogleTileRenderer {
             earthRoot.addChild(entity)
         }
         entitiesByTileIdentifier[tileIdentifier] = entities
-        print("Google RealityKit tile installed: primitives=\(entities.count)")
     }
 
     func remove(tileIdentifier: String) {
@@ -82,7 +82,11 @@ final class GoogleTileRenderer {
             let mesh = try MeshResource.generate(from: [descriptor])
             var material = UnlitMaterial()
             let texture = try await makeTexture(from: payload)
-            material.color = .init(tint: .white, texture: MaterialParameters.Texture(texture))
+            let textureParameter = MaterialParameters.Texture(
+                texture,
+                sampler: makeSampler(from: payload)
+            )
+            material.color = .init(tint: .white, texture: textureParameter)
             // glTF's `doubleSided` controls whether back-face culling is disabled.
             material.faceCulling = payload.doubleSided ? .none : .back
             return ModelEntity(mesh: mesh, materials: [material])
@@ -114,6 +118,50 @@ final class GoogleTileRenderer {
             format: .color(.displayP3, pixelFormat: .rgba8Unorm),
             contents: contents
         )
+    }
+
+    private func makeSampler(
+        from payload: CesiumPrimitivePayload
+    ) -> MaterialParameters.Texture.Sampler {
+        var sampler = MaterialParameters.Texture.Sampler()
+        sampler.modify { descriptor in
+            descriptor.sAddressMode = addressMode(for: payload.samplerWrapS)
+            descriptor.tAddressMode = addressMode(for: payload.samplerWrapT)
+
+            switch payload.samplerMinFilter {
+            case 9728: // NEAREST
+                descriptor.minFilter = .nearest
+                descriptor.mipFilter = .notMipmapped
+            case 9729: // LINEAR
+                descriptor.minFilter = .linear
+                descriptor.mipFilter = .notMipmapped
+            case 9984: // NEAREST_MIPMAP_NEAREST
+                descriptor.minFilter = .nearest
+                descriptor.mipFilter = .nearest
+            case 9985: // LINEAR_MIPMAP_NEAREST
+                descriptor.minFilter = .linear
+                descriptor.mipFilter = .nearest
+            case 9986: // NEAREST_MIPMAP_LINEAR
+                descriptor.minFilter = .nearest
+                descriptor.mipFilter = .linear
+            default: // LINEAR_MIPMAP_LINEAR, including the glTF default
+                descriptor.minFilter = .linear
+                descriptor.mipFilter = .linear
+            }
+            descriptor.magFilter = payload.samplerMagFilter == 9728 ? .nearest : .linear
+        }
+        return sampler
+    }
+
+    private func addressMode(for gltfWrapMode: Int) -> MTLSamplerAddressMode {
+        switch gltfWrapMode {
+        case 33071:
+            return .clampToEdge
+        case 33648:
+            return .mirrorRepeat
+        default:
+            return .repeat
+        }
     }
 
     private func floats(from data: Data) -> [Float] {

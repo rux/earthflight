@@ -6,17 +6,50 @@ import Metal
 final class GoogleTileRenderer {
     let earthRoot = Entity()
     private var entitiesByTileIdentifier: [String: [Entity]] = [:]
+    private var visibleTileIdentifiers: Set<String> = []
     private var installingTileIdentifiers: Set<String> = []
     private var tileGenerations: [String: Int] = [:]
 
-    func install(primitives: [CesiumPrimitivePayload], for tileIdentifier: String) async {
-        guard entitiesByTileIdentifier[tileIdentifier] == nil,
-              !installingTileIdentifiers.contains(tileIdentifier) else {
+    func show(primitives: [CesiumPrimitivePayload], for tileIdentifier: String) {
+        visibleTileIdentifiers.insert(tileIdentifier)
+        if let entities = entitiesByTileIdentifier[tileIdentifier] {
+            for entity in entities {
+                entity.isEnabled = true
+            }
+            return
+        }
+        guard !installingTileIdentifiers.contains(tileIdentifier) else {
             return
         }
         installingTileIdentifiers.insert(tileIdentifier)
         let generation = tileGenerations[tileIdentifier, default: 0]
-        defer { installingTileIdentifiers.remove(tileIdentifier) }
+
+        Task {
+            await install(primitives: primitives, for: tileIdentifier, generation: generation)
+        }
+    }
+
+    func hide(tileIdentifier: String) {
+        visibleTileIdentifiers.remove(tileIdentifier)
+        if installingTileIdentifiers.contains(tileIdentifier) {
+            tileGenerations[tileIdentifier, default: 0] += 1
+        }
+        for entity in entitiesByTileIdentifier[tileIdentifier] ?? [] {
+            entity.isEnabled = false
+        }
+    }
+
+    private func install(
+        primitives: [CesiumPrimitivePayload],
+        for tileIdentifier: String,
+        generation: Int
+    ) async {
+        defer {
+            installingTileIdentifiers.remove(tileIdentifier)
+            if entitiesByTileIdentifier[tileIdentifier] == nil {
+                tileGenerations.removeValue(forKey: tileIdentifier)
+            }
+        }
 
         var entities: [Entity] = []
         for (_, payload) in primitives.enumerated() {
@@ -26,7 +59,8 @@ final class GoogleTileRenderer {
                 entities.append(entity)
             }
         }
-        guard tileGenerations[tileIdentifier, default: 0] == generation,
+        guard visibleTileIdentifiers.contains(tileIdentifier),
+              tileGenerations[tileIdentifier, default: 0] == generation,
               !entities.isEmpty else {
             return
         }
@@ -35,10 +69,16 @@ final class GoogleTileRenderer {
             earthRoot.addChild(entity)
         }
         entitiesByTileIdentifier[tileIdentifier] = entities
+        tileGenerations.removeValue(forKey: tileIdentifier)
     }
 
     func remove(tileIdentifier: String) {
-        tileGenerations[tileIdentifier, default: 0] += 1
+        visibleTileIdentifiers.remove(tileIdentifier)
+        if installingTileIdentifiers.contains(tileIdentifier) {
+            tileGenerations[tileIdentifier, default: 0] += 1
+        } else {
+            tileGenerations.removeValue(forKey: tileIdentifier)
+        }
         guard let entities = entitiesByTileIdentifier.removeValue(forKey: tileIdentifier) else {
             return
         }
@@ -46,6 +86,13 @@ final class GoogleTileRenderer {
             entity.removeFromParent()
         }
     }
+
+#if DEBUG
+    var debugResourceSummary: String {
+        let entityCount = entitiesByTileIdentifier.values.reduce(0) { $0 + $1.count }
+        return "visibleTiles=\(visibleTileIdentifiers.count) cachedTiles=\(entitiesByTileIdentifier.count) entities=\(entityCount) pendingInstalls=\(installingTileIdentifiers.count) generationTokens=\(tileGenerations.count)"
+    }
+#endif
 
     private func makeEntity(
         from payload: CesiumPrimitivePayload

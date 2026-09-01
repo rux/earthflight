@@ -45,9 +45,55 @@ struct EarthflightTests {
         #expect(forwardAfterPitch.y < 0)
     }
 
-    @Test("Horizon levelling preserves forward direction and removes roll")
+    @Test("Combined yaw and pitch do not introduce roll")
     @MainActor
-    func horizonLevelling() {
+    func combinedYawAndPitchStayLevel() {
+        let flightState = FlightState()
+        flightState.rightStick = [0.8, 0.8]
+
+        for _ in 0..<240 {
+            flightState.advance(deltaTime: 1.0 / 60.0)
+        }
+
+        let craftRight = flightState.orientation.act(SIMD3<Float>(1, 0, 0))
+        #expect(abs(craftRight.y) < 0.0001)
+    }
+
+    @Test("Craft delta keeps the rendered Earth transform centred on the craft")
+    @MainActor
+    func craftDeltaTransformCoherence() {
+        let flightState = FlightState()
+        flightState.rightStick = [0.4, -0.3]
+        flightState.leftStick = [0.7, 1]
+
+        for _ in 0..<60 {
+            flightState.advance(deltaTime: 1.0 / 60.0)
+        }
+
+        let initialCraftPosition = SIMD4<Float>(0, 1.5, 0, 1)
+        let currentCraftPosition = SIMD4<Float>(flightState.position, 1)
+        let mappedCurrentPosition =
+            flightState.localEarthFromCraftDelta * initialCraftPosition
+        let restoredInitialPosition =
+            flightState.localEarthFromCraftDelta.inverse * currentCraftPosition
+
+        #expect(
+            simd_length(
+                SIMD3<Float>(mappedCurrentPosition.x, mappedCurrentPosition.y, mappedCurrentPosition.z) -
+                    flightState.position
+            ) < 0.001
+        )
+        #expect(
+            simd_length(
+                SIMD3<Float>(restoredInitialPosition.x, restoredInitialPosition.y, restoredInitialPosition.z) -
+                    SIMD3<Float>(0, 1.5, 0)
+            ) < 0.001
+        )
+    }
+
+    @Test("View reset restores the starting orientation")
+    @MainActor
+    func viewReset() {
         let flightState = FlightState()
         flightState.rightStick = [0.3, -0.2]
         flightState.advance(deltaTime: 0.1)
@@ -56,14 +102,15 @@ struct EarthflightTests {
         flightState.advance(deltaTime: 0.1)
         flightState.isRollingRight = false
 
-        let forwardBeforeLevelling = flightState.orientation.act([0, 0, -1])
-        flightState.levelHorizon()
+        flightState.resetView()
 
-        let forwardAfterLevelling = flightState.orientation.act([0, 0, -1])
-        let rightAfterLevelling = flightState.orientation.act([1, 0, 0])
+        let forward = flightState.orientation.act(SIMD3<Float>(0, 0, -1))
+        let right = flightState.orientation.act(SIMD3<Float>(1, 0, 0))
+        let up = flightState.orientation.act(SIMD3<Float>(0, 1, 0))
 
-        #expect(simd_length(forwardAfterLevelling - forwardBeforeLevelling) < 0.0001)
-        #expect(abs(rightAfterLevelling.y) < 0.0001)
+        #expect(simd_length(forward - SIMD3<Float>(0, 0, -1)) < 0.0001)
+        #expect(simd_length(right - SIMD3<Float>(1, 0, 0)) < 0.0001)
+        #expect(simd_length(up - SIMD3<Float>(0, 1, 0)) < 0.0001)
     }
 
     @Test("The app launches directly into full immersion with an extended gamepad")

@@ -26,7 +26,7 @@ The successful experience is:
 7. The first MapKit search result wins without confirmation or disambiguation.
 8. The user is moved to approximately 1,000 metres above the ground at that location.
 9. Google’s required attribution remains visible.
-10. Nothing else is added.
+10. A minimal blue-gradient sky dome replaces an otherwise black background. Nothing else is added.
 
 ## Project posture: deliberately raw
 
@@ -323,7 +323,7 @@ Target physical controls:
 | L                           | Roll left                      |
 | Physical bottom face button | Speed boost                    |
 | `+`                         | Open voice Jump To             |
-| Right-stick click           | Optional: level roll/horizon   |
+| Right-stick click           | Reset yaw, pitch and roll      |
 
 “Inverted pitch” means pushing the right stick physically forwards/up pitches the craft nose down; pulling it backwards/down pitches the nose up.
 
@@ -581,6 +581,8 @@ non-obvious workaround.
 
 ### Milestone 5 — Dynamic flight streaming
 
+**Status: completed and physically accepted on the original M2 Vision Pro on 1 September 2026.**
+
 * Per-frame Cesium view update.
 * Tile appearance/disappearance.
 * Camera/craft motion.
@@ -601,6 +603,16 @@ A mismatch between the Cesium selection pose and the RealityKit rendered pose ca
 
 Continue dispatching Cesium main-thread tasks before each view update. Preserve tile visibility semantics, asynchronous generation cancellation and current-render-set attribution while the selection changes every frame.
 
+### Settled Milestone 5 flight and presentation behavior
+
+Treat these as accepted implementation contracts. Do not redesign them during Milestone 6 merely because another representation appears more physically realistic.
+
+* Store heading, pitch and roll as independent control state and rebuild the craft orientation basis explicitly. With roll equal to zero, yaw and pitch, including simultaneous diagonal right-stick input, must leave the horizon level. Do not restore incremental `yaw * orientation * pitch` quaternion accumulation.
+* Right-stick click is a hard orientation reset. It restores the launch heading, pitch and roll while preserving geographic position and movement input state; it is not merely a roll-level command.
+* The accepted background is a generated inward-facing unlit sky dome: deep blue at the zenith, softer blue through the middle and pale warm blue at the horizon. It shares the Earth-root attitude transform and remains centred on the virtual craft.
+* Keep all owner-editable flight feel constants in `EarthflightTuning.swift`. The accepted pre-Milestone-8 baseline uses a `6` horizontal speed multiplier and a two-stage vertical curve: the low-altitude curve is capped at 100 m/s, a second squared term begins above 250 m, and absolute vertical speed is capped at 3,000 m/s. Do not tune feel again before Milestone 8 without a measured blocker or an explicit owner request.
+* Preserve the focused transform regression test that verifies `localEarthFromCraftDelta` maps the initial craft pivot to the current craft position and that its inverse maps back. This protects the relationship between rendered RealityKit motion and the Cesium selection pose.
+
 ### Milestone 6 — Planetary coordinates
 
 * Robust local tangent frame.
@@ -608,6 +620,8 @@ Continue dispatching Cesium main-thread tasks before each view update. Preserve 
 * Reliable altitude.
 * Flight across larger distances.
 * Profiling and M2 device tuning only where measured.
+
+Milestone 6 must extend the accepted Milestone 5 coordinate range without breaking its Earth-root/Cesium-view pose coherence, independent head look, attitude invariants, sky presentation or transform regression test.
 
 ### Milestone 7 — Voice Jump To
 

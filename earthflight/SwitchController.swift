@@ -74,7 +74,7 @@ final class SwitchController {
                 return
             }
 
-            Task { @MainActor in self?.flightState.levelHorizon() }
+            Task { @MainActor in self?.flightState.resetView() }
         }
 
         print("Switch Pro Controller flight controls ready.")

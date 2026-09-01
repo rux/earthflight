@@ -31,14 +31,23 @@ NS_ASSUME_NONNULL_BEGIN
                                                              scaleV:(double)scaleV
                                                            rotation:(double)rotation;
 + (NSString *)runLondonLocalFrameSmokeTest;
-+ (void)startStaticLondonTilesWithAPIKey:(NSString *)apiKey;
-+ (void)startStaticLondonTilesWithAPIKey:(NSString *)apiKey
-                             onTileReady:(void (^)(NSString *tileIdentifier, NSArray<CesiumPrimitivePayload *> *primitives))onTileReady;
-+ (void)startStaticLondonTilesWithAPIKey:(NSString *)apiKey
-                           onTileVisible:(void (^)(NSString *tileIdentifier, NSArray<CesiumPrimitivePayload *> *primitives))onTileVisible
-                              onTileFreed:(void (^)(NSString *tileIdentifier))onTileFreed
-                    onAttributionChanged:(void (^)(NSString *attribution))onAttributionChanged;
-+ (void)updateStaticLondonTiles;
++ (void)startLondonTilesWithAPIKey:(NSString *)apiKey
+           maximumScreenSpaceError:(double)maximumScreenSpaceError
+                maximumCachedBytes:(int64_t)maximumCachedBytes
+                     onTileVisible:(void (^)(NSString *tileIdentifier, NSArray<CesiumPrimitivePayload *> *primitives))onTileVisible
+                      onTileHidden:(void (^)(NSString *tileIdentifier))onTileHidden
+                        onTileFreed:(void (^)(NSString *tileIdentifier))onTileFreed
+              onAttributionChanged:(void (^)(NSString *attribution))onAttributionChanged;
++ (void)updateLondonTilesWithCameraPositionX:(double)positionX
+                                   positionY:(double)positionY
+                                   positionZ:(double)positionZ
+                                  directionX:(double)directionX
+                                  directionY:(double)directionY
+                                  directionZ:(double)directionZ
+                                         upX:(double)upX
+                                         upY:(double)upY
+                                         upZ:(double)upZ
+                                   deltaTime:(double)deltaTime;
 
 @end
 

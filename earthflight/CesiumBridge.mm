@@ -51,13 +51,13 @@
 namespace {
 
 void (^tileReady)(NSString *, NSArray<CesiumPrimitivePayload *> *);
+void (^tileHidden)(NSString *);
 void (^tileFreed)(NSString *);
 void (^attributionChanged)(NSString *);
 std::shared_ptr<CesiumUtility::CreditSystem> creditSystem;
 std::string lastAttribution;
 
-// Low fixed Milestone 4 London viewpoint. Keep this identical for Cesium's
-// selection camera and the RealityKit local ENU origin.
+// Validated Milestone 4 RealityKit local origin in fixed central London.
 constexpr double staticLondonEllipsoidHeightMeters = 120.0;
 
 struct TileRenderResources {
@@ -444,20 +444,37 @@ public:
 
 std::unique_ptr<Cesium3DTilesSelection::Tileset> tileset;
 
-Cesium3DTilesSelection::ViewState makeStaticLondonView() {
+glm::dmat4 londonEcefFromEnu() {
     const auto london = CesiumGeospatial::Cartographic::fromDegrees(
         -0.1278,
         51.5074,
         staticLondonEllipsoidHeightMeters);
     const glm::dvec3 position = CesiumGeospatial::Ellipsoid::WGS84.cartographicToCartesian(london);
-    const glm::dmat4 enu = CesiumGeospatial::GlobeTransforms::eastNorthUpToFixedFrame(position);
-    const glm::dvec3 east(enu[0]), north(enu[1]), up(enu[2]);
-    // Look obliquely northwest across central London so the static proof view
-    // contains both nearby geometry and progressively coarser horizon tiles.
-    const glm::dvec3 direction = glm::normalize(-0.15 * east + 0.75 * north - 0.65 * up);
-    const glm::dvec3 cameraUp = glm::normalize(glm::cross(glm::cross(direction, north), direction));
-    // This is a fixed proof view, not yet the headset-driven Milestone 5 view.
-    return {position, direction, cameraUp, {1024.0, 1024.0}, 1.57, 1.22};
+    return CesiumGeospatial::GlobeTransforms::eastNorthUpToFixedFrame(position);
+}
+
+glm::dvec3 ecefVectorFromRealityKitLocal(const glm::dmat4& ecefFromEnu, const glm::dvec3& localVector) {
+    // RealityKit local is right-handed x=east, y=up, z=-north. ENU is
+    // x=east, y=north, z=up. w=0 deliberately excludes translation.
+    const glm::dvec3 enuVector(localVector.x, -localVector.z, localVector.y);
+    return glm::dvec3(ecefFromEnu * glm::dvec4(enuVector, 0.0));
+}
+
+Cesium3DTilesSelection::ViewState makeLondonView(
+    const glm::dvec3& localPosition,
+    const glm::dvec3& localDirection,
+    const glm::dvec3& localUp) {
+    const glm::dmat4 ecefFromEnu = londonEcefFromEnu();
+    // Positions use w=1 so the fixed London ECEF origin is applied. All ECEF
+    // calculations remain double precision.
+    const glm::dvec3 enuPosition(localPosition.x, -localPosition.z, localPosition.y);
+    const glm::dvec3 ecefPosition(ecefFromEnu * glm::dvec4(enuPosition, 1.0));
+    const glm::dvec3 ecefDirection = glm::normalize(
+        ecefVectorFromRealityKitLocal(ecefFromEnu, localDirection));
+    glm::dvec3 ecefUp = ecefVectorFromRealityKitLocal(ecefFromEnu, localUp);
+    ecefUp -= glm::dot(ecefUp, ecefDirection) * ecefDirection;
+    ecefUp = glm::normalize(ecefUp);
+    return {ecefPosition, ecefDirection, ecefUp, {1024.0, 1024.0}, 1.57, 1.22};
 }
 
 } // namespace
@@ -541,27 +558,19 @@ Cesium3DTilesSelection::ViewState makeStaticLondonView() {
     return isCorrect ? @"London local ENU frame: OK" : @"London local ENU frame: FAILED";
 }
 
-+ (void)startStaticLondonTilesWithAPIKey:(NSString *)apiKey {
-    [self startStaticLondonTilesWithAPIKey:apiKey onTileReady:nil];
-}
-
-+ (void)startStaticLondonTilesWithAPIKey:(NSString *)apiKey
-                             onTileReady:(void (^)(NSString *tileIdentifier, NSArray<CesiumPrimitivePayload *> *primitives))onTileReady {
-    [self startStaticLondonTilesWithAPIKey:apiKey
-                             onTileVisible:onTileReady
-                                onTileFreed:nil
-                      onAttributionChanged:nil];
-}
-
-+ (void)startStaticLondonTilesWithAPIKey:(NSString *)apiKey
-                           onTileVisible:(void (^)(NSString *tileIdentifier, NSArray<CesiumPrimitivePayload *> *primitives))onTileVisible
-                              onTileFreed:(void (^)(NSString *tileIdentifier))onTileFreed
-                    onAttributionChanged:(void (^)(NSString *attribution))onAttributionChanged {
++ (void)startLondonTilesWithAPIKey:(NSString *)apiKey
+           maximumScreenSpaceError:(double)maximumScreenSpaceError
+                maximumCachedBytes:(int64_t)maximumCachedBytes
+                     onTileVisible:(void (^)(NSString *tileIdentifier, NSArray<CesiumPrimitivePayload *> *primitives))onTileVisible
+                      onTileHidden:(void (^)(NSString *tileIdentifier))onTileHidden
+                        onTileFreed:(void (^)(NSString *tileIdentifier))onTileFreed
+              onAttributionChanged:(void (^)(NSString *attribution))onAttributionChanged {
     if (apiKey.length == 0) {
         NSLog(@"Google Maps API key is empty. Add it to ignored Secrets.xcconfig.");
         return;
     }
     tileReady = [onTileVisible copy];
+    tileHidden = [onTileHidden copy];
     tileFreed = [onTileFreed copy];
     attributionChanged = [onAttributionChanged copy];
     lastAttribution.clear();
@@ -577,27 +586,47 @@ Cesium3DTilesSelection::ViewState makeStaticLondonView() {
     creditSystem = std::make_shared<CesiumUtility::CreditSystem>();
     externals.pCreditSystem = creditSystem;
     Cesium3DTilesSelection::TilesetOptions options;
-    // This is a fixed, bounded London view. Four concurrent Google requests fill
-    // its selected coverage promptly without introducing a persistent cache.
+    // Preserve the validated Milestone 4 load concurrency and preload policy.
     options.maximumSimultaneousTileLoads = 4;
     options.preloadAncestors = false;
     options.preloadSiblings = false;
-    // Four pixels gives the static proof view recognisable nearby geometry while
-    // Cesium keeps distant tiles progressively coarser by screen-space error.
-    options.maximumScreenSpaceError = 4.0;
+    // These are Cesium's native projected-error and bounded-cache controls. They
+    // remain owner-editable in EarthflightTuning.swift; no second LOD or cache is
+    // layered over Cesium's selection.
+    options.maximumScreenSpaceError = std::max(maximumScreenSpaceError, 0.1);
+    options.maximumCachedBytes = static_cast<int64_t>(std::max<int64_t>(maximumCachedBytes, 0));
     tileset = std::make_unique<Cesium3DTilesSelection::Tileset>(
         externals, "https://tile.googleapis.com/v1/3dtiles/root.json", options);
 }
 
-+ (void)updateStaticLondonTiles {
++ (void)updateLondonTilesWithCameraPositionX:(double)positionX
+                                   positionY:(double)positionY
+                                   positionZ:(double)positionZ
+                                  directionX:(double)directionX
+                                  directionY:(double)directionY
+                                  directionZ:(double)directionZ
+                                         upX:(double)upX
+                                         upY:(double)upY
+                                         upZ:(double)upZ
+                                   deltaTime:(double)deltaTime {
     if (!tileset) return;
     tileset->getAsyncSystem().dispatchMainThreadTasks();
+    const glm::dvec3 localDirection(directionX, directionY, directionZ);
+    const glm::dvec3 localUp(upX, upY, upZ);
+    if (glm::length(localDirection) < 1e-9 ||
+        glm::length(localUp) < 1e-9 ||
+        glm::length(glm::cross(localDirection, localUp)) < 1e-9) return;
+    const Cesium3DTilesSelection::ViewState view = makeLondonView(
+        {positionX, positionY, positionZ}, localDirection, localUp);
     const Cesium3DTilesSelection::ViewUpdateResult& result =
-        tileset->updateViewGroup(tileset->getDefaultViewGroup(), {makeStaticLondonView()}, 1.0f / 60.0f);
+        tileset->updateViewGroup(
+            tileset->getDefaultViewGroup(),
+            {view},
+            static_cast<float>(std::clamp(deltaTime, 0.0, 0.1)));
     for (const Cesium3DTilesSelection::Tile::ConstPointer& tile : result.tilesFadingOut) {
         const Cesium3DTilesSelection::TileRenderContent *content = tile->getContent().getRenderContent();
         auto *resources = content ? static_cast<TileRenderResources *>(content->getRenderResources()) : nullptr;
-        if (resources && resources->identifier && tileFreed) tileFreed(resources->identifier);
+        if (resources && resources->identifier && tileHidden) tileHidden(resources->identifier);
     }
     for (const Cesium3DTilesSelection::Tile::ConstPointer& tile : result.tilesToRenderThisFrame) {
         const Cesium3DTilesSelection::TileRenderContent *content = tile->getContent().getRenderContent();

@@ -230,6 +230,7 @@
 					"$(PROJECT_DIR)/build/cesium-visionos/vcpkg_installed/arm64-visionos/include",
 				);
 				INFOPLIST_FILE = "$(TARGET_NAME)/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = Earthflight;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -312,6 +313,7 @@
 					"$(PROJECT_DIR)/build/cesium-visionos/vcpkg_installed/arm64-visionos/include",
 				);
 				INFOPLIST_FILE = "$(TARGET_NAME)/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = Earthflight;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

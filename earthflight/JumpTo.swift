@@ -17,19 +17,14 @@ final class JumpTo {
     }
 
     struct Destination {
-        let displayName: String
         let longitudeDegrees: Double
         let latitudeDegrees: Double
-        let meanSeaLevelGroundElevationMeters: Double
-        let egm96HeightAboveEllipsoidMeters: Double
         let groundEllipsoidHeightMeters: Double
-        let destinationEllipsoidHeightMeters: Double
     }
 
     private struct ElevationResponse: Decodable {
         struct Result: Decodable {
             let elevation: Double
-            let resolution: Double?
         }
 
         let results: [Result]
@@ -39,7 +34,6 @@ final class JumpTo {
     private enum JumpError: Error {
         case permissionDenied
         case unsupportedTranscriptionLocale
-        case microphoneUnavailable
         case emptyTranscript
         case noMapResult
         case elevationHTTP(Int)
@@ -83,15 +77,6 @@ final class JumpTo {
                 let destination = try await self.resolveDestination(from: item)
                 self.pendingDestination = destination
                 self.phase = .readyToJump
-#if DEBUG
-                print(
-                    "Jump resolved: name=\(destination.displayName) lat=\(destination.latitudeDegrees) " +
-                    "lon=\(destination.longitudeDegrees) groundMSL=\(destination.meanSeaLevelGroundElevationMeters) " +
-                    "egm96=\(destination.egm96HeightAboveEllipsoidMeters) " +
-                    "groundEllipsoid=\(destination.groundEllipsoidHeightMeters) " +
-                    "targetEllipsoid=\(destination.destinationEllipsoidHeightMeters)"
-                )
-#endif
             } catch is CancellationError {
                 self.finish()
             } catch {
@@ -215,13 +200,9 @@ final class JumpTo {
         )
         let groundEllipsoid = elevation + egm96
         return Destination(
-            displayName: item.name ?? transcript,
             longitudeDegrees: coordinate.longitude,
             latitudeDegrees: coordinate.latitude,
-            meanSeaLevelGroundElevationMeters: elevation,
-            egm96HeightAboveEllipsoidMeters: egm96,
-            groundEllipsoidHeightMeters: groundEllipsoid,
-            destinationEllipsoidHeightMeters: groundEllipsoid + EarthflightTuning.jumpHeightAboveGroundMeters
+            groundEllipsoidHeightMeters: groundEllipsoid
         )
     }
 
@@ -250,7 +231,6 @@ final class JumpTo {
         case JumpError.elevationStatus(let status): print("Jump elevation API status \(status)")
         case JumpError.permissionDenied: print("Jump speech or microphone permission denied")
         case JumpError.unsupportedTranscriptionLocale: print("Jump speech transcriber has no supported locale")
-        case JumpError.microphoneUnavailable: print("Jump microphone is unavailable")
         case JumpError.timeout: print("Jump speech timed out")
         default: print("Jump failed: \(error.localizedDescription)")
         }

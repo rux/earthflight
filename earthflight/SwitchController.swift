@@ -5,6 +5,10 @@ final class SwitchController {
     private let flightState: FlightState
     private var connectionObserver: NSObjectProtocol?
     private var hasInstalledHandlers = false
+    private var isLeftShoulderPressed = false
+    private var isRightShoulderPressed = false
+    private var isLeftTriggerPressed = false
+    private var isRightTriggerPressed = false
     var onJumpToRequested: (@MainActor () -> Void)?
 
     init(flightState: FlightState) {
@@ -38,10 +42,12 @@ final class SwitchController {
         print("Controller connected: vendor=\(controller.vendorName ?? "unknown"), category=\(controller.productCategory)")
 
         gamepad.leftThumbstick.valueChangedHandler = { [weak self] _, xValue, yValue in
+            let filteredX = Self.deadZone(xValue)
+            let filteredY = Self.deadZone(yValue)
             Task { @MainActor in
                 self?.flightState.leftStick = SIMD2(
-                    Self.deadZone(xValue),
-                    Self.deadZone(yValue)
+                    filteredX,
+                    filteredY
                 )
             }
         }
@@ -56,19 +62,48 @@ final class SwitchController {
         }
 
         gamepad.leftTrigger.pressedChangedHandler = { [weak self] _, _, pressed in
-            Task { @MainActor in self?.flightState.isDescending = pressed }
+            Task { @MainActor in
+                guard let self else { return }
+                self.isLeftTriggerPressed = pressed
+                self.flightState.isDescending =
+                    self.isLeftTriggerPressed || self.isRightTriggerPressed
+            }
         }
         gamepad.rightTrigger.pressedChangedHandler = { [weak self] _, _, pressed in
-            Task { @MainActor in self?.flightState.isAscending = pressed }
+            Task { @MainActor in
+                guard let self else { return }
+                self.isRightTriggerPressed = pressed
+                self.flightState.isDescending =
+                    self.isLeftTriggerPressed || self.isRightTriggerPressed
+            }
         }
         gamepad.leftShoulder.pressedChangedHandler = { [weak self] _, _, pressed in
-            Task { @MainActor in self?.flightState.isRollingLeft = pressed }
+            Task { @MainActor in
+                guard let self else { return }
+                self.isLeftShoulderPressed = pressed
+                self.flightState.isAscending =
+                    self.isLeftShoulderPressed || self.isRightShoulderPressed
+            }
         }
         gamepad.rightShoulder.pressedChangedHandler = { [weak self] _, _, pressed in
-            Task { @MainActor in self?.flightState.isRollingRight = pressed }
+            Task { @MainActor in
+                guard let self else { return }
+                self.isRightShoulderPressed = pressed
+                self.flightState.isAscending =
+                    self.isLeftShoulderPressed || self.isRightShoulderPressed
+            }
         }
         gamepad.buttonA.pressedChangedHandler = { [weak self] _, _, pressed in
             Task { @MainActor in self?.flightState.isBoosting = pressed }
+        }
+        // GameController face-button names are positional. On a Switch Pro,
+        // physical Y is the left button (buttonX) and physical A is the right
+        // button (buttonB).
+        gamepad.buttonX.pressedChangedHandler = { [weak self] _, _, pressed in
+            Task { @MainActor in self?.flightState.isRollingLeft = pressed }
+        }
+        gamepad.buttonB.pressedChangedHandler = { [weak self] _, _, pressed in
+            Task { @MainActor in self?.flightState.isRollingRight = pressed }
         }
         gamepad.rightThumbstickButton?.pressedChangedHandler = { [weak self] _, _, pressed in
             guard pressed else {
@@ -88,6 +123,6 @@ final class SwitchController {
     }
 
     private static func deadZone(_ value: Float) -> Float {
-        abs(value) < 0.12 ? 0 : value
+        abs(value) < EarthflightTuning.controllerDeadZone ? 0 : value
     }
 }

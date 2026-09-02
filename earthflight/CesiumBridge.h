@@ -42,7 +42,10 @@ NS_ASSUME_NONNULL_BEGIN
                                            latitudeDegrees:(double)latitudeDegrees;
 + (void)startTilesWithAPIKey:(NSString *)apiKey
            maximumScreenSpaceError:(double)maximumScreenSpaceError
+      maximumSimultaneousTileLoads:(uint32_t)maximumSimultaneousTileLoads
                 maximumCachedBytes:(int64_t)maximumCachedBytes
+              lodTransitionsEnabled:(BOOL)lodTransitionsEnabled
+          lodTransitionLengthSeconds:(float)lodTransitionLengthSeconds
                      onTileVisible:(void (^)(NSString *tileIdentifier, NSArray<CesiumPrimitivePayload *> *primitives))onTileVisible
                       onTileHidden:(void (^)(NSString *tileIdentifier))onTileHidden
                         onTileFreed:(void (^)(NSString *tileIdentifier))onTileFreed
@@ -57,6 +60,7 @@ NS_ASSUME_NONNULL_BEGIN
                                          upY:(double)upY
                                          upZ:(double)upZ
                                    deltaTime:(double)deltaTime;
++ (void)tileDidFinishInstalling:(NSString *)tileIdentifier;
 
 @end
 

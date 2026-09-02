@@ -30,6 +30,7 @@
 #include <spdlog/sinks/null_sink.h>
 #include <spdlog/sinks/callback_sink.h>
 #include <type_traits>
+#include <unordered_set>
 #include <variant>
 
 #include <cstddef>
@@ -61,6 +62,9 @@ void (^tileFreed)(NSString *);
 void (^attributionChanged)(NSString *);
 std::shared_ptr<CesiumUtility::CreditSystem> creditSystem;
 std::string lastAttribution;
+bool lodTransitionsAreEnabled = false;
+bool pauseLodTransitionsForPendingInstall = false;
+std::unordered_set<std::string> realityKitInstalledTiles;
 std::optional<CesiumGeospatial::EarthGravitationalModel1996Grid> egm96Grid;
 
 const CesiumGeospatial::EarthGravitationalModel1996Grid& loadedEGM96Grid() {
@@ -325,7 +329,7 @@ std::string decorateGoogleURL(const std::string& url, NSString *apiKey) {
     }
 }
 
-class StaticRendererPreparation final : public Cesium3DTilesSelection::IPrepareRendererResources {
+class RendererPreparation final : public Cesium3DTilesSelection::IPrepareRendererResources {
 public:
     CesiumAsync::Future<Cesium3DTilesSelection::TileLoadResultAndRenderResources> prepareInLoadThread(
         const CesiumAsync::AsyncSystem& asyncSystem, Cesium3DTilesSelection::TileLoadResult&& result,
@@ -495,7 +499,10 @@ public:
         auto *resources = static_cast<TileRenderResources *>(mainThreadResources ?: loadThreadResources);
         NSString *identifier = resources->identifier;
         if (identifier && tileFreed) {
-            dispatch_async(dispatch_get_main_queue(), ^{ tileFreed(identifier); });
+            dispatch_async(dispatch_get_main_queue(), ^{
+                realityKitInstalledTiles.erase(identifier.UTF8String);
+                tileFreed(identifier);
+            });
         }
         delete resources;
     }
@@ -641,7 +648,10 @@ std::unique_ptr<Cesium3DTilesSelection::Tileset> tileset;
 
 + (void)startTilesWithAPIKey:(NSString *)apiKey
            maximumScreenSpaceError:(double)maximumScreenSpaceError
+      maximumSimultaneousTileLoads:(uint32_t)maximumSimultaneousTileLoads
                 maximumCachedBytes:(int64_t)maximumCachedBytes
+              lodTransitionsEnabled:(BOOL)lodTransitionsEnabled
+          lodTransitionLengthSeconds:(float)lodTransitionLengthSeconds
                      onTileVisible:(void (^)(NSString *tileIdentifier, NSArray<CesiumPrimitivePayload *> *primitives))onTileVisible
                       onTileHidden:(void (^)(NSString *tileIdentifier))onTileHidden
                         onTileFreed:(void (^)(NSString *tileIdentifier))onTileFreed
@@ -655,6 +665,9 @@ std::unique_ptr<Cesium3DTilesSelection::Tileset> tileset;
     tileFreed = [onTileFreed copy];
     attributionChanged = [onAttributionChanged copy];
     lastAttribution.clear();
+    lodTransitionsAreEnabled = lodTransitionsEnabled;
+    pauseLodTransitionsForPendingInstall = false;
+    realityKitInstalledTiles.clear();
     Cesium3DTilesContent::registerAllTileContentTypes();
     Cesium3DTilesSelection::TilesetExternals externals{
         nullptr,
@@ -662,13 +675,14 @@ std::unique_ptr<Cesium3DTilesSelection::Tileset> tileset;
         CesiumAsync::AsyncSystem(std::make_shared<DispatchTaskProcessor>())
     };
     externals.pAssetAccessor = std::make_shared<GoogleAssetAccessor>(std::make_shared<AppleAssetAccessor>(), apiKey);
-    externals.pPrepareRendererResources = std::make_shared<StaticRendererPreparation>();
+    externals.pPrepareRendererResources = std::make_shared<RendererPreparation>();
     externals.pLogger = makeSanitizedCesiumLogger();
     creditSystem = std::make_shared<CesiumUtility::CreditSystem>();
     externals.pCreditSystem = creditSystem;
     Cesium3DTilesSelection::TilesetOptions options;
-    // Preserve the validated Milestone 4 load concurrency and preload policy.
-    options.maximumSimultaneousTileLoads = 4;
+    // Preserve the settled preload policy and keep all quality/load controls in
+    // EarthflightTuning rather than layering another selector over Cesium.
+    options.maximumSimultaneousTileLoads = maximumSimultaneousTileLoads;
     options.preloadAncestors = false;
     options.preloadSiblings = false;
     // These are Cesium's native projected-error and bounded-cache controls. They
@@ -676,6 +690,9 @@ std::unique_ptr<Cesium3DTilesSelection::Tileset> tileset;
     // layered over Cesium's selection.
     options.maximumScreenSpaceError = std::max(maximumScreenSpaceError, 0.1);
     options.maximumCachedBytes = static_cast<int64_t>(std::max<int64_t>(maximumCachedBytes, 0));
+    options.enableLodTransitionPeriod = lodTransitionsEnabled;
+    options.lodTransitionLength = std::max(lodTransitionLengthSeconds, 0.001f);
+    options.kickDescendantsWhileFadingIn = true;
     tileset = std::make_unique<Cesium3DTilesSelection::Tileset>(
         externals, "https://tile.googleapis.com/v1/3dtiles/root.json", options);
 }
@@ -708,23 +725,49 @@ std::unique_ptr<Cesium3DTilesSelection::Tileset> tileset;
         1.57,
         1.22
     };
+    const float frameDelta = static_cast<float>(std::clamp(deltaTime, 0.0, 0.1));
+    // Cesium's transition clock normally starts as soon as content is selected,
+    // before Earthflight's asynchronous RealityKit mesh and texture creation has
+    // necessarily attached that content. Freeze transition progress until every
+    // currently selected replacement has confirmed installation, keeping its old
+    // LOD opaque rather than exposing the sky between the two renderer lifecycles.
+    const float transitionDelta =
+        lodTransitionsAreEnabled && pauseLodTransitionsForPendingInstall
+            ? 0.0f
+            : frameDelta;
     const Cesium3DTilesSelection::ViewUpdateResult& result =
         tileset->updateViewGroup(
             tileset->getDefaultViewGroup(),
             {view},
-            static_cast<float>(std::clamp(deltaTime, 0.0, 0.1)));
+            transitionDelta);
     for (const Cesium3DTilesSelection::Tile::ConstPointer& tile : result.tilesFadingOut) {
         const Cesium3DTilesSelection::TileRenderContent *content = tile->getContent().getRenderContent();
         auto *resources = content ? static_cast<TileRenderResources *>(content->getRenderResources()) : nullptr;
-        if (resources && resources->identifier && tileHidden) tileHidden(resources->identifier);
+        if (!resources || !resources->identifier) continue;
+        if (!lodTransitionsAreEnabled) {
+            if (tileHidden) tileHidden(resources->identifier);
+            continue;
+        }
+        // Keep the outgoing RealityKit container fully opaque for the complete
+        // overlap window. Partial hierarchy opacity exposes background geometry
+        // because the two LOD meshes have competing depth surfaces.
+        const float progress = std::clamp(content->getLodTransitionFadePercentage(), 0.0f, 1.0f);
+        if (progress >= 1.0f && tileHidden) {
+            tileHidden(resources->identifier);
+        }
     }
+    bool hasPendingRealityKitInstall = false;
     for (const Cesium3DTilesSelection::Tile::ConstPointer& tile : result.tilesToRenderThisFrame) {
         const Cesium3DTilesSelection::TileRenderContent *content = tile->getContent().getRenderContent();
         auto *resources = content ? static_cast<TileRenderResources *>(content->getRenderResources()) : nullptr;
         if (resources && resources->identifier && resources->primitives.count > 0 && tileReady) {
+            if (!realityKitInstalledTiles.contains(resources->identifier.UTF8String)) {
+                hasPendingRealityKitInstall = true;
+            }
             tileReady(resources->identifier, resources->primitives);
         }
     }
+    pauseLodTransitionsForPendingInstall = hasPendingRealityKitInstall;
     if (creditSystem && attributionChanged) {
         const CesiumUtility::CreditsSnapshot& snapshot = creditSystem->getSnapshot();
         std::string currentAttribution;
@@ -738,6 +781,10 @@ std::unique_ptr<Cesium3DTilesSelection::Tileset> tileset;
         }
     }
     tileset->loadTiles();
+}
+
++ (void)tileDidFinishInstalling:(NSString *)tileIdentifier {
+    realityKitInstalledTiles.insert(tileIdentifier.UTF8String);
 }
 
 @end

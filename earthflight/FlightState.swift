@@ -36,7 +36,6 @@ final class FlightState {
     // Y=geodetic up, Z=south; translations are metres. Both matrices stay Double.
     private(set) var ecefFromRenderLocal: simd_double4x4
     private(set) var renderLocalFromEcef: simd_double4x4
-    private(set) var rebaseCount = 0
 
     /// Approximate local ground ellipsoid height used only by the accepted speed
     /// curve. It is not continuously sampled while flying away from this datum.
@@ -57,6 +56,13 @@ final class FlightState {
     var isRollingLeft = false
     var isRollingRight = false
     var isBoosting = false
+
+    private var strongestActiveLeftStick = SIMD2<Float>(repeating: 0)
+    private var wasLeftStickActive = false
+    private var leftStickReleaseRemainingSeconds: Float = 0
+    private var lastActiveVerticalInput: Float = 0
+    private var wasVerticalInputActive = false
+    private var verticalReleaseRemainingSeconds: Float = 0
 
     private var updateSubscription: EventSubscription?
 
@@ -167,8 +173,8 @@ final class FlightState {
     }
 
     /// Atomically replaces the global craft position and floating render frame.
-    /// The independent local heading, pitch, roll, and all controller input remain
-    /// intact, so the craft has the same user-facing attitude at the destination.
+    /// Controller input remains intact, while heading, pitch, and roll reset through
+    /// the same path as a physical right-stick click so every destination starts level.
     func jump(
         longitudeDegrees: Double,
         latitudeDegrees: Double,
@@ -187,18 +193,32 @@ final class FlightState {
         ecefFromRenderLocal = frame.ecefFromLocal
         renderLocalFromEcef = frame.localFromEcef
         speedReferenceGroundEllipsoidHeightMeters = groundEllipsoidHeightMeters
-        rebaseCount += 1
+        clearMovementRelease()
+        resetView()
     }
 
     func advance(deltaTime: TimeInterval) {
         let dt = Float(min(deltaTime, 0.1))
+        let rawVerticalInput = Float((isAscending ? 1 : 0) - (isDescending ? 1 : 0))
+        let movementLeftStick: SIMD2<Float>
+        let verticalInput: Float
+        if EarthflightTuning.movementReleaseDurationSeconds > 0 {
+            movementLeftStick = releaseAdjustedLeftStick(deltaTime: dt)
+            verticalInput = releaseAdjustedVerticalInput(
+                rawInput: rawVerticalInput,
+                deltaTime: dt
+            )
+        } else {
+            movementLeftStick = leftStick
+            verticalInput = rawVerticalInput
+        }
 
-        headingRadians -= rightStick.x * 1.2 * dt
+        headingRadians -= rightStick.x * EarthflightTuning.yawRateRadiansPerSecond * dt
         // The verified Switch Pro Controller reports forward stick motion as
         // positive Y. Decreasing pitch pitches the craft nose down.
-        pitchRadians -= rightStick.y * 1.0 * dt
+        pitchRadians -= rightStick.y * EarthflightTuning.pitchRateRadiansPerSecond * dt
         let rollInput: Float = (isRollingRight ? 1 : 0) - (isRollingLeft ? 1 : 0)
-        rollRadians -= rollInput * 0.45 * dt
+        rollRadians -= rollInput * EarthflightTuning.rollRateRadiansPerSecond * dt
 
         headingRadians = atan2(sin(headingRadians), cos(headingRadians))
         rollRadians = atan2(sin(rollRadians), cos(rollRadians))
@@ -209,8 +229,11 @@ final class FlightState {
         let horizontalSpeed = (
             EarthflightTuning.minimumHorizontalSpeedMetersPerSecond +
                 EarthflightTuning.horizontalHeightSpeedFactor * speedReferenceHeightMeters
-        ) * Double(EarthflightTuning.horizontalSpeedMultiplier) * (isBoosting ? 4 : 1)
-        let craftMovement = orientation.act(SIMD3<Float>(leftStick.x, 0, -leftStick.y))
+        ) * Double(EarthflightTuning.horizontalSpeedMultiplier) *
+            (isBoosting ? EarthflightTuning.boostMultiplier : 1)
+        let craftMovement = orientation.act(
+            SIMD3<Float>(movementLeftStick.x, 0, -movementLeftStick.y)
+        )
         let attitudeMovement = SIMD3<Double>(
             Double(craftMovement.x),
             Double(craftMovement.y),
@@ -233,15 +256,81 @@ final class FlightState {
                 EarthflightTuning.highAltitudeExcessSquaredSpeedFactor *
                 highAltitudeExcess * highAltitudeExcess
         )
-        let verticalInput = Double((isAscending ? 1 : 0) - (isDescending ? 1 : 0))
-        let verticalBoost: Double = isBoosting ? 4 : 1
+        let verticalBoost = isBoosting ? EarthflightTuning.boostMultiplier : 1
         let geodeticVerticalMovement = SIMD3<Double>(
             0,
-            verticalInput * verticalSpeed * verticalBoost * Double(dt),
+            Double(verticalInput) * verticalSpeed * verticalBoost * Double(dt),
             0
         )
 
         integrate(localDisplacement: attitudeMovement + geodeticVerticalMovement)
+    }
+
+    private func releaseAdjustedLeftStick(deltaTime: Float) -> SIMD2<Float> {
+        let duration = EarthflightTuning.movementReleaseDurationSeconds
+        if leftStick != .zero {
+            // Any new input cancels an in-flight release before becoming the
+            // source gesture for the next distinct active-to-zero transition.
+            if !wasLeftStickActive {
+                strongestActiveLeftStick = leftStick
+            } else {
+                // Physical testing showed Switch Pro recentering rebound as high
+                // as +0.62 after a -1.0 left strafe, far beyond the dead zone.
+                // Preserve the strongest deliberate sample on each axis rather
+                // than arming a wrong-direction decay from that spring rebound.
+                if abs(leftStick.x) >= abs(strongestActiveLeftStick.x) {
+                    strongestActiveLeftStick.x = leftStick.x
+                }
+                if abs(leftStick.y) >= abs(strongestActiveLeftStick.y) {
+                    strongestActiveLeftStick.y = leftStick.y
+                }
+            }
+            wasLeftStickActive = true
+            leftStickReleaseRemainingSeconds = 0
+            return leftStick
+        }
+        if wasLeftStickActive {
+            wasLeftStickActive = false
+            leftStickReleaseRemainingSeconds = duration
+        }
+        guard leftStickReleaseRemainingSeconds > 0 else {
+            return .zero
+        }
+
+        leftStickReleaseRemainingSeconds = max(0, leftStickReleaseRemainingSeconds - deltaTime)
+        return strongestActiveLeftStick * (leftStickReleaseRemainingSeconds / duration)
+    }
+
+    private func releaseAdjustedVerticalInput(
+        rawInput: Float,
+        deltaTime: Float
+    ) -> Float {
+        let duration = EarthflightTuning.movementReleaseDurationSeconds
+        if rawInput != 0 {
+            lastActiveVerticalInput = rawInput
+            wasVerticalInputActive = true
+            verticalReleaseRemainingSeconds = 0
+            return rawInput
+        }
+        if wasVerticalInputActive {
+            wasVerticalInputActive = false
+            verticalReleaseRemainingSeconds = duration
+        }
+        guard verticalReleaseRemainingSeconds > 0 else {
+            return 0
+        }
+
+        verticalReleaseRemainingSeconds = max(0, verticalReleaseRemainingSeconds - deltaTime)
+        return lastActiveVerticalInput * (verticalReleaseRemainingSeconds / duration)
+    }
+
+    private func clearMovementRelease() {
+        strongestActiveLeftStick = .zero
+        wasLeftStickActive = false
+        leftStickReleaseRemainingSeconds = 0
+        lastActiveVerticalInput = 0
+        wasVerticalInputActive = false
+        verticalReleaseRemainingSeconds = 0
     }
 
     @discardableResult
@@ -252,7 +341,6 @@ final class FlightState {
         let newFrame = EarthflightLocalFrame(originEcef: craftEcefPosition)
         ecefFromRenderLocal = newFrame.ecefFromLocal
         renderLocalFromEcef = newFrame.localFromEcef
-        rebaseCount += 1
         return true
     }
 

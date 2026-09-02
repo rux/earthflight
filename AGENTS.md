@@ -124,6 +124,45 @@ The following still require care:
 
 Be ruthless about product complexity, not careless about rendering correctness.
 
+### Physical Vision Pro tool limitation
+
+The coding agent cannot currently use its device-interaction screenshot / accessibility-hierarchy / interactive-session service with the physical Apple Vision Pro.
+
+That service may report support for iOS, watchOS and tvOS 27+ simulators while
+rejecting visionOS hardware. Treat this as a known tooling limitation, not as a
+project, signing, device-pairing or visionOS configuration problem.
+
+Therefore:
+
+* do not repeatedly probe the device-interaction service for Vision Pro support;
+* do not spend time looking for an alternative screenshot/hierarchy session
+  through that service;
+* do not attempt to fix Earthflight, Xcode, signing or deployment settings merely
+  because that service rejects the headset;
+* do not leave a nonexistent interaction session open or wait for one to appear;
+* do not claim that visual appearance, controller feel, immersive placement,
+  attribution position, LOD transitions or other headset-visible behaviour has
+  been verified by the agent.
+
+Xcode build/deployment facilities may still be usable independently where the
+current environment exposes them. Use those normally when available.
+
+For anything requiring visual or experiential validation on the physical
+Vision Pro, build the project and give the owner a concise manual test procedure.
+The owner is the authoritative observer for:
+
+* immersive visual correctness;
+* controller feel;
+* head-tracking behaviour;
+* LOD transitions and blinking;
+* sky appearance;
+* attribution placement;
+* performance, smoothness and comfort.
+
+Do not search for speculative non-interactive screenshot or hierarchy routes
+unless a concrete new capability is explicitly exposed by the current tools.
+
+
 ## Fixed technical decisions
 
 These decisions are settled. Do not re-open them without a concrete build, API or performance blocker.
@@ -207,7 +246,7 @@ toolchain to a release toolchain:
 5. repeat the current milestone's physical-headset smoke test before beginning the next milestone;
 6. update the recorded known-good Xcode, SDK, compiler and native-build details.
 
-Do not add compatibility layers for old beta toolchains. Support the currently installed authoritative toolchain.
+Do not add compatibility layers for old beta toolchains. Support the currently installed authoritative toolafchain.
 
 ### Apple frameworks
 
@@ -707,6 +746,11 @@ After editing, report:
 * warnings that matter;
 * exact manual checks to perform on the physical Vision Pro;
 * anything that could not be verified without the hardware.
+
+When physical-headset validation is required, state plainly that the agent's
+device-interaction service does not support visionOS hardware and provide the
+owner with the exact manual checks instead of investigating alternative
+screenshot or hierarchy mechanisms.
 
 Never claim that controller mapping, comfort, visual correctness or device performance has been verified unless it was actually checked on the physical headset.
 

@@ -11,7 +11,12 @@ final class GoogleTileRenderer {
         let ecefFromPrimitiveLocal: simd_double4x4
     }
 
-    private var entitiesByTileIdentifier: [String: [AnchoredEntity]] = [:]
+    private final class TileEntities {
+        let container = Entity()
+        var anchoredEntities: [AnchoredEntity] = []
+    }
+
+    private var tileEntitiesByIdentifier: [String: TileEntities] = [:]
     private var visibleTileIdentifiers: Set<String> = []
     private var installingTileIdentifiers: Set<String> = []
     private var tileGenerations: [String: Int] = [:]
@@ -23,8 +28,8 @@ final class GoogleTileRenderer {
 
     func setRenderFrame(renderLocalFromEcef: simd_double4x4) {
         self.renderLocalFromEcef = renderLocalFromEcef
-        for anchoredEntities in entitiesByTileIdentifier.values {
-            for anchoredEntity in anchoredEntities {
+        for tileEntities in tileEntitiesByIdentifier.values {
+            for anchoredEntity in tileEntities.anchoredEntities {
                 applyCurrentPlacement(to: anchoredEntity)
             }
         }
@@ -32,10 +37,15 @@ final class GoogleTileRenderer {
 
     func show(primitives: [CesiumPrimitivePayload], for tileIdentifier: String) {
         visibleTileIdentifiers.insert(tileIdentifier)
-        if let entities = entitiesByTileIdentifier[tileIdentifier] {
-            for anchoredEntity in entities {
-                anchoredEntity.entity.isEnabled = true
-            }
+        let tileEntities: TileEntities
+        if let existing = tileEntitiesByIdentifier[tileIdentifier] {
+            tileEntities = existing
+        } else {
+            tileEntities = TileEntities()
+            tileEntitiesByIdentifier[tileIdentifier] = tileEntities
+        }
+        if !tileEntities.anchoredEntities.isEmpty {
+            tileEntities.container.isEnabled = true
             return
         }
         guard !installingTileIdentifiers.contains(tileIdentifier) else {
@@ -45,7 +55,12 @@ final class GoogleTileRenderer {
         let generation = tileGenerations[tileIdentifier, default: 0]
 
         Task {
-            await install(primitives: primitives, for: tileIdentifier, generation: generation)
+            await install(
+                primitives: primitives,
+                for: tileIdentifier,
+                tileEntities: tileEntities,
+                generation: generation
+            )
         }
     }
 
@@ -54,25 +69,24 @@ final class GoogleTileRenderer {
         if installingTileIdentifiers.contains(tileIdentifier) {
             tileGenerations[tileIdentifier, default: 0] += 1
         }
-        for anchoredEntity in entitiesByTileIdentifier[tileIdentifier] ?? [] {
-            anchoredEntity.entity.isEnabled = false
-        }
+        tileEntitiesByIdentifier[tileIdentifier]?.container.isEnabled = false
     }
 
     private func install(
         primitives: [CesiumPrimitivePayload],
         for tileIdentifier: String,
+        tileEntities: TileEntities,
         generation: Int
     ) async {
         defer {
             installingTileIdentifiers.remove(tileIdentifier)
-            if entitiesByTileIdentifier[tileIdentifier] == nil {
+            if tileEntitiesByIdentifier[tileIdentifier] == nil {
                 tileGenerations.removeValue(forKey: tileIdentifier)
             }
         }
 
         var entities: [AnchoredEntity] = []
-        for (_, payload) in primitives.enumerated() {
+        for payload in primitives {
             if let entity = await makeEntity(
                 from: payload
             ) {
@@ -80,6 +94,7 @@ final class GoogleTileRenderer {
             }
         }
         guard visibleTileIdentifiers.contains(tileIdentifier),
+              tileEntitiesByIdentifier[tileIdentifier] === tileEntities,
               tileGenerations[tileIdentifier, default: 0] == generation,
               !entities.isEmpty else {
             return
@@ -89,9 +104,13 @@ final class GoogleTileRenderer {
             // Resource generation may span a rebase. Placement deliberately uses
             // the renderer's latest frame only at main-actor installation time.
             applyCurrentPlacement(to: anchoredEntity)
-            earthRoot.addChild(anchoredEntity.entity)
+            tileEntities.container.addChild(anchoredEntity.entity)
         }
-        entitiesByTileIdentifier[tileIdentifier] = entities
+        tileEntities.anchoredEntities = entities
+        earthRoot.addChild(tileEntities.container)
+        // Cesium's transition progress is held while this renderer's async work
+        // is pending. Signal only after the guarded container is actually attached.
+        CesiumBridge.tileDidFinishInstalling(tileIdentifier)
         tileGenerations.removeValue(forKey: tileIdentifier)
     }
 
@@ -102,20 +121,11 @@ final class GoogleTileRenderer {
         } else {
             tileGenerations.removeValue(forKey: tileIdentifier)
         }
-        guard let entities = entitiesByTileIdentifier.removeValue(forKey: tileIdentifier) else {
+        guard let tileEntities = tileEntitiesByIdentifier.removeValue(forKey: tileIdentifier) else {
             return
         }
-        for anchoredEntity in entities {
-            anchoredEntity.entity.removeFromParent()
-        }
+        tileEntities.container.removeFromParent()
     }
-
-#if DEBUG
-    var debugResourceSummary: String {
-        let entityCount = entitiesByTileIdentifier.values.reduce(0) { $0 + $1.count }
-        return "visibleTiles=\(visibleTileIdentifiers.count) cachedTiles=\(entitiesByTileIdentifier.count) entities=\(entityCount) pendingInstalls=\(installingTileIdentifiers.count) generationTokens=\(tileGenerations.count)"
-    }
-#endif
 
     private func makeEntity(
         from payload: CesiumPrimitivePayload

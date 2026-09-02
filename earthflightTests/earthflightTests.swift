@@ -30,7 +30,12 @@ struct EarthflightTests {
         let boostedDistance = simd_length(boosted.position - SIMD3<Float>(0, 1.5, 0))
 
         #expect(highAltitudeDistance > lowAltitudeDistance)
-        #expect(abs(boostedDistance - lowAltitudeDistance * 4) < 0.0001)
+        #expect(
+            abs(
+                boostedDistance -
+                    lowAltitudeDistance * Float(EarthflightTuning.boostMultiplier)
+            ) < 0.0001
+        )
     }
 
     @Test("Pushing the right stick forward pitches the craft nose down")
@@ -355,10 +360,15 @@ struct EarthflightTests {
         let destinationEllipsoidHeightMeters =
             groundEllipsoidHeightMeters + EarthflightTuning.jumpHeightAboveGroundMeters
         #expect(abs(groundEllipsoidHeightMeters - (meanSeaLevelGroundElevationMeters + egm96)) < 1e-12)
-        #expect(abs(destinationEllipsoidHeightMeters - (groundEllipsoidHeightMeters + 1_000)) < 1e-12)
+        #expect(
+            abs(
+                destinationEllipsoidHeightMeters -
+                    (groundEllipsoidHeightMeters + EarthflightTuning.jumpHeightAboveGroundMeters)
+            ) < 1e-12
+        )
     }
 
-    @Test("Atomic jump preserves controls and resets the render origin")
+    @Test("Atomic jump preserves controls and resets orientation and render origin")
     @MainActor
     func atomicJumpStateInvariants() {
         let flightState = FlightState()
@@ -368,7 +378,6 @@ struct EarthflightTests {
         flightState.isRollingRight = true
         flightState.isBoosting = true
         flightState.advance(deltaTime: 0.2)
-        let preservedOrientation = flightState.orientation
         let preservedLeftStick = flightState.leftStick
         let preservedRightStick = flightState.rightStick
 
@@ -382,14 +391,26 @@ struct EarthflightTests {
 
         #expect(abs(flightState.longitudeDegrees - 139.6917) < 1e-8)
         #expect(abs(flightState.latitudeDegrees - 35.6895) < 1e-8)
-        #expect(abs(flightState.ellipsoidHeightMeters - 3_345) < 1e-5)
+        let expectedDestinationHeight =
+            groundEllipsoidHeightMeters + EarthflightTuning.jumpHeightAboveGroundMeters
+        #expect(abs(flightState.ellipsoidHeightMeters - expectedDestinationHeight) < 1e-5)
         let cartographic = CesiumBridge.cartographicDegrees(fromEcefPosition: flightState.craftEcefPosition)
         #expect(abs(cartographic.x - 139.6917) < 1e-8)
         #expect(abs(cartographic.y - 35.6895) < 1e-8)
-        #expect(abs(cartographic.z - 3_345) < 1e-5)
+        #expect(abs(cartographic.z - expectedDestinationHeight) < 1e-5)
         #expect(flightState.originDistanceMeters < 0.001)
-        #expect(abs(flightState.speedReferenceHeightMeters - 1_000) < 1e-5)
-        #expect(simd_length(flightState.orientation.vector - preservedOrientation.vector) < 0.00001)
+        #expect(
+            abs(
+                flightState.speedReferenceHeightMeters -
+                    EarthflightTuning.jumpHeightAboveGroundMeters
+            ) < 1e-5
+        )
+        let forward = flightState.orientation.act(SIMD3<Float>(0, 0, -1))
+        let right = flightState.orientation.act(SIMD3<Float>(1, 0, 0))
+        let up = flightState.orientation.act(SIMD3<Float>(0, 1, 0))
+        #expect(simd_length(forward - SIMD3<Float>(0, 0, -1)) < 0.0001)
+        #expect(simd_length(right - SIMD3<Float>(1, 0, 0)) < 0.0001)
+        #expect(simd_length(up - SIMD3<Float>(0, 1, 0)) < 0.0001)
         #expect(flightState.leftStick == preservedLeftStick)
         #expect(flightState.rightStick == preservedRightStick)
         #expect(flightState.isAscending && flightState.isRollingRight && flightState.isBoosting)

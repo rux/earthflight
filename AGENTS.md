@@ -652,6 +652,18 @@ Milestone 6 must extend the accepted Milestone 5 coordinate range without breaki
 * Geoid/ellipsoid correction.
 * Teleport to 1,000 metres above ground.
 
+### Milestone 7 completion notes
+
+Established on the original M2 Vision Pro:
+
+* The physical Switch Pro `+` button is `GCExtendedGamepad.buttonMenu`; only its press-down transition starts one Jump To operation.
+* Jump To pauses only `FlightState.advance`; head tracking, current Cesium selection, tile lifecycle, sky, and attribution continue. A fully resolved destination crosses to the existing scene update as one pending value, where `FlightState.jump` and `googleRenderer.setRenderFrame` happen before the next Cesium view update.
+* MapKit receives the exact trimmed transcript without a region and `response.mapItems.first` wins. One Google Elevation request supplies mean-sea-level ground height; bundled Cesium `WW15MGH.DAC` EGM96 supplies `N`; use `groundEllipsoidHeight = H + N`, then add the fixed 1,000 m clearance.
+* The jump preserves heading, pitch, roll, and active controller inputs. It centres a fresh render frame at the new ECEF craft position and sets the speed-reference ground datum, so every destination begins at a 1,000 m speed reference. It does not recreate the tileset or renderer resources.
+* The preferred `SpeechAnalyzer` capture path has a concrete visionOS blocker: `AVCaptureDevice.default(for: .audio)` returned no device on hardware, and `AVCaptureDevice.DeviceType.microphone` is unavailable to visionOS. Use the single legacy `SFSpeechRecognizer` plus `AVAudioEngine` fallback, with `AVAudioNode.installAudioTap` and a copied mutable PCM buffer. Do not reintroduce both recognition paths in parallel.
+* A SwiftUI `.overlay` outside a full immersive `RealityView` did not present the temporary status card on hardware. Keep Jump To status as a persistent RealityView `Attachment`, billboarded directly in front of the wearer and transparent while idle; do not replace it with an outer window overlay.
+* Speech Jump To was physically exercised successfully for San Francisco, Tokyo, and Mexico City. The overlay shows the active prompt and partial transcript.
+
 ### Milestone 8 — Feel
 
 * Tune dead zones.

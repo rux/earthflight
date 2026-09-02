@@ -38,6 +38,10 @@ final class FlightState {
     private(set) var renderLocalFromEcef: simd_double4x4
     private(set) var rebaseCount = 0
 
+    /// Approximate local ground ellipsoid height used only by the accepted speed
+    /// curve. It is not continuously sampled while flying away from this datum.
+    private var speedReferenceGroundEllipsoidHeightMeters: Double
+
     private(set) var orientation = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
 
     // Keep these as independent control state. Rebuilding the basis makes the
@@ -74,6 +78,8 @@ final class FlightState {
         ellipsoidHeightMeters = Self.launchCraftEllipsoidHeightMeters
         ecefFromRenderLocal = renderFrame.ecefFromLocal
         renderLocalFromEcef = renderFrame.localFromEcef
+        speedReferenceGroundEllipsoidHeightMeters =
+            Self.launchCraftEllipsoidHeightMeters - EarthflightTuning.initialSpeedReferenceHeightMeters
         updateCartographic()
     }
 
@@ -94,6 +100,8 @@ final class FlightState {
         self.ellipsoidHeightMeters = ellipsoidHeightMeters
         ecefFromRenderLocal = renderFrame.ecefFromLocal
         renderLocalFromEcef = renderFrame.localFromEcef
+        speedReferenceGroundEllipsoidHeightMeters =
+            ellipsoidHeightMeters - EarthflightTuning.initialSpeedReferenceHeightMeters
         updateCartographic()
     }
 
@@ -112,8 +120,7 @@ final class FlightState {
     var speedReferenceHeightMeters: Double {
         max(
             0,
-            EarthflightTuning.initialSpeedReferenceHeightMeters +
-                ellipsoidHeightMeters - Self.launchCraftEllipsoidHeightMeters
+            ellipsoidHeightMeters - speedReferenceGroundEllipsoidHeightMeters
         )
     }
 
@@ -157,6 +164,30 @@ final class FlightState {
         pitchRadians = 0
         rollRadians = 0
         rebuildOrientation()
+    }
+
+    /// Atomically replaces the global craft position and floating render frame.
+    /// The independent local heading, pitch, roll, and all controller input remain
+    /// intact, so the craft has the same user-facing attitude at the destination.
+    func jump(
+        longitudeDegrees: Double,
+        latitudeDegrees: Double,
+        groundEllipsoidHeightMeters: Double,
+        heightAboveGroundMeters: Double
+    ) {
+        let destinationEllipsoidHeightMeters =
+            groundEllipsoidHeightMeters + heightAboveGroundMeters
+        craftEcefPosition = Self.ecefPosition(
+            longitudeDegrees: longitudeDegrees,
+            latitudeDegrees: latitudeDegrees,
+            ellipsoidHeightMeters: destinationEllipsoidHeightMeters
+        )
+        updateCartographic()
+        let frame = EarthflightLocalFrame(originEcef: craftEcefPosition)
+        ecefFromRenderLocal = frame.ecefFromLocal
+        renderLocalFromEcef = frame.localFromEcef
+        speedReferenceGroundEllipsoidHeightMeters = groundEllipsoidHeightMeters
+        rebaseCount += 1
     }
 
     func advance(deltaTime: TimeInterval) {

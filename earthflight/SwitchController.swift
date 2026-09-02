@@ -5,6 +5,7 @@ final class SwitchController {
     private let flightState: FlightState
     private var connectionObserver: NSObjectProtocol?
     private var hasInstalledHandlers = false
+    var onJumpToRequested: (@MainActor () -> Void)?
 
     init(flightState: FlightState) {
         self.flightState = flightState
@@ -75,6 +76,12 @@ final class SwitchController {
             }
 
             Task { @MainActor in self?.flightState.resetView() }
+        }
+        gamepad.buttonMenu.pressedChangedHandler = { [weak self] _, _, pressed in
+            guard pressed else {
+                return
+            }
+            Task { @MainActor in self?.onJumpToRequested?() }
         }
 
         print("Switch Pro Controller flight controls ready.")

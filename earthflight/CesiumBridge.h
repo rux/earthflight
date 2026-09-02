@@ -38,6 +38,8 @@ NS_ASSUME_NONNULL_BEGIN
                            ellipsoidHeightMeters:(double)ellipsoidHeightMeters;
 + (simd_double3)cartographicDegreesFromEcefPosition:(simd_double3)ecefPosition;
 + (simd_double4x4)ecefFromLocalHorizontalAtEcefPosition:(simd_double3)ecefPosition;
++ (double)egm96HeightAboveWGS84EllipsoidAtLongitudeDegrees:(double)longitudeDegrees
+                                           latitudeDegrees:(double)latitudeDegrees;
 + (void)startTilesWithAPIKey:(NSString *)apiKey
            maximumScreenSpaceError:(double)maximumScreenSpaceError
                 maximumCachedBytes:(int64_t)maximumCachedBytes

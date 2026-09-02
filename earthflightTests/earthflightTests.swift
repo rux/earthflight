@@ -332,6 +332,80 @@ struct EarthflightTests {
         #expect(abs(converted[1].doubleValue - 0.7) < 0.000001)
     }
 
+    @Test("Jump To starts with no visible status content")
+    @MainActor
+    func jumpToStartsIdle() {
+        let jumpTo = JumpTo()
+
+        #expect(!jumpTo.isActive)
+        #expect(jumpTo.displayPrompt.isEmpty)
+        #expect(jumpTo.transcript.isEmpty)
+    }
+
+    @Test("Bundled EGM96 grid converts mean sea level ground heights")
+    func egm96DatumConversion() {
+        let egm96 = CesiumBridge.egm96HeightAboveWGS84Ellipsoid(
+            atLongitudeDegrees: 0,
+            latitudeDegrees: 0
+        )
+        #expect(abs(egm96 - 17.16) < 0.1)
+
+        let meanSeaLevelGroundElevationMeters = 123.45
+        let groundEllipsoidHeightMeters = meanSeaLevelGroundElevationMeters + egm96
+        let destinationEllipsoidHeightMeters =
+            groundEllipsoidHeightMeters + EarthflightTuning.jumpHeightAboveGroundMeters
+        #expect(abs(groundEllipsoidHeightMeters - (meanSeaLevelGroundElevationMeters + egm96)) < 1e-12)
+        #expect(abs(destinationEllipsoidHeightMeters - (groundEllipsoidHeightMeters + 1_000)) < 1e-12)
+    }
+
+    @Test("Atomic jump preserves controls and resets the render origin")
+    @MainActor
+    func atomicJumpStateInvariants() {
+        let flightState = FlightState()
+        flightState.rightStick = [0.45, -0.3]
+        flightState.leftStick = [0.6, 0.8]
+        flightState.isAscending = true
+        flightState.isRollingRight = true
+        flightState.isBoosting = true
+        flightState.advance(deltaTime: 0.2)
+        let preservedOrientation = flightState.orientation
+        let preservedLeftStick = flightState.leftStick
+        let preservedRightStick = flightState.rightStick
+
+        let groundEllipsoidHeightMeters = 2_345.0
+        flightState.jump(
+            longitudeDegrees: 139.6917,
+            latitudeDegrees: 35.6895,
+            groundEllipsoidHeightMeters: groundEllipsoidHeightMeters,
+            heightAboveGroundMeters: EarthflightTuning.jumpHeightAboveGroundMeters
+        )
+
+        #expect(abs(flightState.longitudeDegrees - 139.6917) < 1e-8)
+        #expect(abs(flightState.latitudeDegrees - 35.6895) < 1e-8)
+        #expect(abs(flightState.ellipsoidHeightMeters - 3_345) < 1e-5)
+        let cartographic = CesiumBridge.cartographicDegrees(fromEcefPosition: flightState.craftEcefPosition)
+        #expect(abs(cartographic.x - 139.6917) < 1e-8)
+        #expect(abs(cartographic.y - 35.6895) < 1e-8)
+        #expect(abs(cartographic.z - 3_345) < 1e-5)
+        #expect(flightState.originDistanceMeters < 0.001)
+        #expect(abs(flightState.speedReferenceHeightMeters - 1_000) < 1e-5)
+        #expect(simd_length(flightState.orientation.vector - preservedOrientation.vector) < 0.00001)
+        #expect(flightState.leftStick == preservedLeftStick)
+        #expect(flightState.rightStick == preservedRightStick)
+        #expect(flightState.isAscending && flightState.isRollingRight && flightState.isBoosting)
+        #expect(simd_length(flightState.renderLocalPosition) < 0.001)
+
+        let worldFromCraftAtLaunch = matrix_identity_double4x4
+        let worldFromRenderLocal = FlightState.worldFromRenderLocal(
+            worldFromCraftAtLaunch: worldFromCraftAtLaunch,
+            renderLocalFromCraft: flightState.renderLocalFromCraft
+        )
+        #expect(matrixDistance(
+            worldFromRenderLocal * flightState.renderLocalFromCraft,
+            worldFromCraftAtLaunch
+        ) < 1e-8)
+    }
+
     private func matrixDistance(_ lhs: simd_double4x4, _ rhs: simd_double4x4) -> Double {
         max(
             simd_length(lhs.columns.0 - rhs.columns.0),

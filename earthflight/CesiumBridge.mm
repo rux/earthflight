@@ -16,6 +16,7 @@
 #include <CesiumAsync/ITaskProcessor.h>
 #include <CesiumGeospatial/Cartographic.h>
 #include <CesiumGeospatial/Ellipsoid.h>
+#include <CesiumGeospatial/EarthGravitationalModel1996Grid.h>
 #include <CesiumGeospatial/LocalHorizontalCoordinateSystem.h>
 #include <CesiumUtility/CreditSystem.h>
 
@@ -30,6 +31,9 @@
 #include <spdlog/sinks/callback_sink.h>
 #include <type_traits>
 #include <variant>
+
+#include <cstddef>
+#include <memory>
 
 @interface CesiumPrimitivePayload ()
 @property (nonatomic, readwrite) NSData *positions;
@@ -57,6 +61,22 @@ void (^tileFreed)(NSString *);
 void (^attributionChanged)(NSString *);
 std::shared_ptr<CesiumUtility::CreditSystem> creditSystem;
 std::string lastAttribution;
+std::optional<CesiumGeospatial::EarthGravitationalModel1996Grid> egm96Grid;
+
+const CesiumGeospatial::EarthGravitationalModel1996Grid& loadedEGM96Grid() {
+    if (!egm96Grid) {
+        NSURL *url = [[NSBundle bundleForClass:[CesiumBridge class]] URLForResource:@"WW15MGH" withExtension:@"DAC"];
+        NSCAssert(url != nil, @"WW15MGH.DAC must be bundled with Earthflight");
+        NSData *data = [NSData dataWithContentsOfURL:url];
+        NSCAssert(data != nil, @"Earthflight could not load bundled WW15MGH.DAC");
+        const auto *bytes = static_cast<const std::byte *>(data.bytes);
+        egm96Grid = CesiumGeospatial::EarthGravitationalModel1996Grid::fromBuffer(
+            std::span<const std::byte>(bytes, data.length)
+        );
+        NSCAssert(egm96Grid.has_value(), @"Bundled WW15MGH.DAC is malformed");
+    }
+    return *egm96Grid;
+}
 
 struct TileRenderResources {
     __strong NSString *identifier;
@@ -608,6 +628,15 @@ std::unique_ptr<Cesium3DTilesSelection::Tileset> tileset;
     return simdMatrixFromGlm(
         makeRealityKitLocalFrame(glmVectorFromSimd(ecefPosition))
             .getLocalToEcefTransformation());
+}
+
++ (double)egm96HeightAboveWGS84EllipsoidAtLongitudeDegrees:(double)longitudeDegrees
+                                           latitudeDegrees:(double)latitudeDegrees {
+    const CesiumGeospatial::Cartographic location =
+        CesiumGeospatial::Cartographic::fromDegrees(longitudeDegrees, latitudeDegrees);
+    const double height = loadedEGM96Grid().sampleHeight(location);
+    NSCAssert(std::isfinite(height), @"EGM96 returned a nonfinite height");
+    return height;
 }
 
 + (void)startTilesWithAPIKey:(NSString *)apiKey

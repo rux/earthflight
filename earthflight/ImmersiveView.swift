@@ -8,6 +8,7 @@ struct ImmersiveView: View {
     @State private var flightState = FlightState()
     @State private var switchController: SwitchController?
     @State private var headTracking = HeadTracking()
+    @State private var jumpTo = JumpTo()
     @State private var attribution = ""
 #if DEBUG
     @State private var debugTelemetry = DebugTelemetry()
@@ -23,6 +24,13 @@ struct ImmersiveView: View {
             skyDome.position = state.position
             googleRenderer.earthRoot.addChild(skyDome)
             content.add(googleRenderer.earthRoot)
+            if let jumpOverlayEntity = attachments.entity(for: "JumpToOverlay") {
+                // This attachment is a real immersive entity rather than a window overlay,
+                // so it remains visible over the full immersive RealityView.
+                jumpOverlayEntity.position = [0, 1.5, -1.25]
+                jumpOverlayEntity.components.set(BillboardComponent())
+                content.add(jumpOverlayEntity)
+            }
 
 #if DEBUG
             if let telemetryEntity = attachments.entity(for: "PlanetaryTelemetry") {
@@ -54,6 +62,7 @@ struct ImmersiveView: View {
             )
 
             let tracking = headTracking
+            let jump = jumpTo
             // render-local -> immersive world at launch is the physically accepted
             // Milestone 5 placement. Compose it with launch craft-local -> render-local
             // so the resulting craft pose remains fixed through movement and rebases.
@@ -65,11 +74,23 @@ struct ImmersiveView: View {
             var debugElapsed: TimeInterval = 0
 
             let subscription = content.subscribe(to: SceneEvents.Update.self) { event in
-                state.advance(deltaTime: event.deltaTime)
-                if state.rebaseIfNeeded() {
+                if let destination = jump.takePendingDestination() {
+                    state.jump(
+                        longitudeDegrees: destination.longitudeDegrees,
+                        latitudeDegrees: destination.latitudeDegrees,
+                        groundEllipsoidHeightMeters: destination.groundEllipsoidHeightMeters,
+                        heightAboveGroundMeters: EarthflightTuning.jumpHeightAboveGroundMeters
+                    )
                     googleRenderer.setRenderFrame(
                         renderLocalFromEcef: state.renderLocalFromEcef
                     )
+                } else if !jump.isActive {
+                    state.advance(deltaTime: event.deltaTime)
+                    if state.rebaseIfNeeded() {
+                        googleRenderer.setRenderFrame(
+                            renderLocalFromEcef: state.renderLocalFromEcef
+                        )
+                    }
                 }
                 // The dome shares the Earth-root rotation but stays centred on the
                 // virtual craft in the current render frame.
@@ -134,6 +155,7 @@ struct ImmersiveView: View {
                         latitudeDegrees: state.latitudeDegrees,
                         longitudeDegrees: state.longitudeDegrees,
                         ellipsoidHeightMeters: state.ellipsoidHeightMeters,
+                        speedReferenceHeightMeters: state.speedReferenceHeightMeters,
                         originDistanceMeters: state.originDistanceMeters,
                         rebaseCount: state.rebaseCount
                     )
@@ -159,6 +181,10 @@ struct ImmersiveView: View {
                         debugTelemetry.longitudeDegrees
                     ))
                     Text(verbatim: String(
+                        format: "Speed reference: %.1f m",
+                        debugTelemetry.speedReferenceHeightMeters
+                    ))
+                    Text(verbatim: String(
                         format: "Ellipsoid: %.1f m",
                         debugTelemetry.ellipsoidHeightMeters
                     ))
@@ -173,6 +199,19 @@ struct ImmersiveView: View {
                 .background(.black.opacity(0.55), in: .rect(cornerRadius: 8))
             }
 #endif
+            Attachment(id: "JumpToOverlay") {
+                VStack(spacing: 8) {
+                    Text(jumpTo.displayPrompt)
+                    if !jumpTo.transcript.isEmpty {
+                        Text(jumpTo.transcript)
+                    }
+                }
+                .font(.title3)
+                .padding(18)
+                .background(.black.opacity(0.7), in: .rect(cornerRadius: 12))
+                .opacity(jumpTo.isActive ? 1 : 0)
+                .allowsHitTesting(false)
+            }
         }
         .overlay(alignment: .bottomTrailing) {
             GoogleAttributionView(attribution: attribution)
@@ -180,6 +219,7 @@ struct ImmersiveView: View {
         .handlesGameControllerEvents(matching: .gamepad)
         .task {
             let controller = SwitchController(flightState: flightState)
+            controller.onJumpToRequested = { jumpTo.start() }
             switchController = controller
             controller.start()
             await headTracking.start()
@@ -191,6 +231,7 @@ struct ImmersiveView: View {
         var latitudeDegrees = FlightState.launchLatitudeDegrees
         var longitudeDegrees = FlightState.launchLongitudeDegrees
         var ellipsoidHeightMeters = FlightState.launchCraftEllipsoidHeightMeters
+        var speedReferenceHeightMeters = EarthflightTuning.initialSpeedReferenceHeightMeters
         var originDistanceMeters = 1.5
         var rebaseCount = 0
     }

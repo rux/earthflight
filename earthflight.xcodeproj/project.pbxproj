@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		CFB59D423042D4D400FD96FD /* AGENTS.md in Resources */ = {isa = PBXBuildFile; fileRef = CFB59D413042D4CC00FD96FD /* AGENTS.md */; };
 		CFB59D4C3042FD3F00FD96FD /* BUILDING.md in Resources */ = {isa = PBXBuildFile; fileRef = CFB59D4B3042FD3F00FD96FD /* BUILDING.md */; };
+		CFC5D81C3048586200A63525 /* WW15MGH.DAC in Resources */ = {isa = PBXBuildFile; fileRef = CFC5D81B3048586100A63525 /* WW15MGH.DAC */; };
 		CFFB86ED304459ED0078AD3B /* GoogleTileRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFFB86EC304459ED0078AD3B /* GoogleTileRenderer.swift */; };
 /* End PBXBuildFile section */
 
@@ -27,6 +28,7 @@
 		CF2DEC3030402D2600BD2F79 /* earthflightTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = earthflightTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		CFB59D413042D4CC00FD96FD /* AGENTS.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = AGENTS.md; sourceTree = "<group>"; };
 		CFB59D4B3042FD3F00FD96FD /* BUILDING.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = BUILDING.md; sourceTree = "<group>"; };
+		CFC5D81B3048586100A63525 /* WW15MGH.DAC */ = {isa = PBXFileReference; lastKnownFileType = file; name = WW15MGH.DAC; path = "ThirdParty/cesium-native/data/WW15MGH.DAC"; sourceTree = "<group>"; };
 		CFFB86EC304459ED0078AD3B /* GoogleTileRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleTileRenderer.swift; sourceTree = "<group>"; };
 		E4F000001234567800000001 /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -74,6 +76,7 @@
 		CF2DEC1030402D2500BD2F79 = {
 			isa = PBXGroup;
 			children = (
+				CFC5D81B3048586100A63525 /* WW15MGH.DAC */,
 				E4F000001234567800000001 /* Config.xcconfig */,
 				CFB59D413042D4CC00FD96FD /* AGENTS.md */,
 				CF2DEC1B30402D2500BD2F79 /* earthflight */,
@@ -178,6 +181,7 @@
 		CF2DEC1730402D2500BD2F79 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
+				CFC5D81C3048586200A63525 /* WW15MGH.DAC in Resources */,
 				CFB59D4C3042FD3F00FD96FD /* BUILDING.md in Resources */,
 				CFB59D423042D4D400FD96FD /* AGENTS.md in Resources */,
 			);
@@ -232,6 +236,8 @@
 				);
 				INFOPLIST_FILE = "$(TARGET_NAME)/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Earthflight;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Earthflight listens for a spoken destination when you press +.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Earthflight converts a spoken destination into a place search.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -316,6 +322,8 @@
 				);
 				INFOPLIST_FILE = "$(TARGET_NAME)/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Earthflight;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Earthflight listens for a spoken destination when you press +.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Earthflight converts a spoken destination into a place search.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

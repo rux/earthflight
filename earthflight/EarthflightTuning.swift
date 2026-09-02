@@ -10,6 +10,8 @@ enum EarthflightTuning {
     // Temporary speed reference preserving the accepted London launch feel. It
     // is not terrain height or AGL; Milestone 6 altitude is WGS84 ellipsoid height.
     static let initialSpeedReferenceHeightMeters: Double = 70
+    /// A Jump To places the craft at this fixed clearance above converted ground.
+    static let jumpHeightAboveGroundMeters: Double = 1_000
     // Flight-speed tuning lives together here deliberately. Milestone 8 should
     // adjust these constants instead of scattering new multipliers through
     // FlightState. All speeds are metres per second and heights are metres AGL.

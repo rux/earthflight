@@ -1,8 +1,16 @@
-* EARTHFLIGHT
+# EARTHFLIGHT
 
-This project is here because there's seemingly not a simple google earth viewer controlled by a gamepad.
+## Why?
+This project is here because there was not a simple Google Earth style viewer controlled by a gamepad.
 
-The goal is to be entirely simple - fire it up, use the already-connected Nintendo Switch Pro controller (no other support because that's the only controller I have). No settings screens or configuration options, tweaking means changing the code. That can all come later if the basics work fine.
+** What?
+The goal is to be comically simple - fire it up, use my (already-connected) Nintendo Switch Pro controller (no other support because that's the only controller I have). No settings screens or configuration options, tweaking means changing the code.
+Teleporting to a location is done by pressing the + button and speaking. No options, no menus, first result wins.
+A long term goal would be to drive this using 3DConnexion space mouse controlls - proper 3D controller for a 3D environment.
 
-Genuine long term goal would be to drive this using 3DConnexion space mouse controlls - proper 3D controller for a 3D environment. It would be my dream.
-
+## How?
+Earthflight is a native Swift/RealityKit visionOS app. The Earth itself comes from Google's Photorealistic 3D Tiles service: the same sort of streamed photogrammetric data used to represent real cities, terrain and buildings in 3D. Cesium Native does the difficult housekeeping — deciding which tiles are visible, what level of detail they need, loading them and throwing old ones away — but it does not draw anything. A small Objective-C++ bridge converts the glTF content supplied by Cesium into ordinary RealityKit meshes, textures and materials for Vision Pro to render.
+Flying is deliberately separate from looking. The Nintendo Switch Pro Controller controls a virtual craft, while Vision Pro continues to control the real camera from the wearer's head movement. Looking left does not turn the aircraft left. Internally, the craft's position is stored as a double-precision position on the WGS84 Earth, while RealityKit only sees a small local patch measured in metres. The local origin is periodically moved along with the craft, which avoids the floating-point precision problems that would otherwise appear after flying thousands of kilometres around a planet.
+Pressing + provides the only navigation shortcut. Earthflight listens for a spoken destination, passes the transcription to MapKit and simply accepts the first result. It then asks Google Elevation for the local ground height, applies an EGM96 geoid correction so that the result matches the WGS84 coordinate system used by Cesium, and places the craft 1,000 metres above the result. There is no search-results screen, confirmation dialogue or saved-place system: say a place and go there.
+Rendering quality is likewise intentionally uncomplicated. Cesium's screen-space-error calculation decides how much distant scenery is worth loading, with the main quality, cache and controller-feel values collected in EarthflightTuning.swift rather than exposed through a settings screen. LOD changes retain the old tile until its replacement has actually been built by RealityKit, avoiding the conspicuous flashes that occurred when coarse and detailed geometry were swapped too early. Google branding and the attribution associated with the currently visible tiles remain on screen as required.
+There is no Unity, game engine, physics simulation or custom Metal renderer. The application is essentially a thin native visionOS flight rig around RealityKit, Cesium Native, Google's 3D Tiles, GameController, Speech and MapKit. Its bias throughout is towards doing one peculiar thing with as little machinery as possible.

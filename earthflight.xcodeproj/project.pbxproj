@@ -29,6 +29,7 @@
 		CFB59D413042D4CC00FD96FD /* AGENTS.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = AGENTS.md; sourceTree = "<group>"; };
 		CFB59D4B3042FD3F00FD96FD /* BUILDING.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = BUILDING.md; sourceTree = "<group>"; };
 		CFC5D81B3048586100A63525 /* WW15MGH.DAC */ = {isa = PBXFileReference; lastKnownFileType = file; name = WW15MGH.DAC; path = "ThirdParty/cesium-native/data/WW15MGH.DAC"; sourceTree = "<group>"; };
+		CFECCDD13048B00D000C919D /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		CFFB86EC304459ED0078AD3B /* GoogleTileRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleTileRenderer.swift; sourceTree = "<group>"; };
 		E4F000001234567800000001 /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -83,6 +84,7 @@
 				CF2DEC3330402D2600BD2F79 /* earthflightTests */,
 				CFB59D4B3042FD3F00FD96FD /* BUILDING.md */,
 				CFFB86EC304459ED0078AD3B /* GoogleTileRenderer.swift */,
+				CFECCDD13048B00D000C919D /* README.md */,
 				CF2DEC1A30402D2500BD2F79 /* Products */,
 			);
 			sourceTree = "<group>";

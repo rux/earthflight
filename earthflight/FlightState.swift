@@ -2,28 +2,46 @@ import Foundation
 import RealityKit
 import simd
 
+struct EarthflightLocalFrame {
+    let ecefFromLocal: simd_double4x4
+    let localFromEcef: simd_double4x4
+
+    init(originEcef: SIMD3<Double>) {
+        ecefFromLocal = CesiumBridge.ecefFromLocalHorizontal(
+            atEcefPosition: originEcef
+        )
+        localFromEcef = ecefFromLocal.inverse
+    }
+}
+
 @MainActor
 final class FlightState {
-    private static let initialLocalEarthPosition = SIMD3<Double>(0, 1.5, 0)
+    static let launchLongitudeDegrees = -0.1278
+    static let launchLatitudeDegrees = 51.5074
+    static let launchBaseEllipsoidHeightMeters = 120.0
+    static let launchCraftEllipsoidHeightMeters = 121.5
 
-    // Fixed-London RealityKit local metres: x=east, y=up, z=-north.
-    // Keep the persistent craft position in Double; conversion to Float happens
-    // only when RealityKit's Earth-root matrix is produced.
-    private(set) var localEarthPosition = initialLocalEarthPosition
-    var position: SIMD3<Float> {
-        SIMD3(
-            Float(localEarthPosition.x),
-            Float(localEarthPosition.y),
-            Float(localEarthPosition.z)
-        )
-    }
+    // A 10 km tangent step keeps the simple projected horizontal integration
+    // well conditioned even when altitude-scaled boost produces a large frame step.
+    private static let maximumSpatialIntegrationStepMeters = 10_000.0
+
+    // The single persistent global position: WGS84 Earth-centred, Earth-fixed
+    // Cartesian metres in Double. Cartographic values below are derived snapshots.
+    private(set) var craftEcefPosition: SIMD3<Double>
+    private(set) var longitudeDegrees: Double
+    private(set) var latitudeDegrees: Double
+    private(set) var ellipsoidHeightMeters: Double
+
+    // Current floating render frame. Local axes are right-handed X=east,
+    // Y=geodetic up, Z=south; translations are metres. Both matrices stay Double.
+    private(set) var ecefFromRenderLocal: simd_double4x4
+    private(set) var renderLocalFromEcef: simd_double4x4
+    private(set) var rebaseCount = 0
+
     private(set) var orientation = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
 
-    // Keep these as independent control state. The earlier incremental quaternion
-    // composition let simultaneous yaw and pitch manifest as an apparent bank of
-    // the rendered Earth even though no shoulder-roll input was present. Rebuilding
-    // a basis from explicit angles below makes the important invariant obvious and
-    // testable: heading and pitch never change the horizon's roll.
+    // Keep these as independent control state. Rebuilding the basis makes the
+    // accepted invariant explicit: heading and pitch never create incidental roll.
     private var headingRadians: Float = 0
     private var pitchRadians: Float = 0
     private var rollRadians: Float = 0
@@ -38,13 +56,102 @@ final class FlightState {
 
     private var updateSubscription: EventSubscription?
 
+    init() {
+        let craftEcef = Self.ecefPosition(
+            longitudeDegrees: Self.launchLongitudeDegrees,
+            latitudeDegrees: Self.launchLatitudeDegrees,
+            ellipsoidHeightMeters: Self.launchCraftEllipsoidHeightMeters
+        )
+        let renderOriginEcef = Self.ecefPosition(
+            longitudeDegrees: Self.launchLongitudeDegrees,
+            latitudeDegrees: Self.launchLatitudeDegrees,
+            ellipsoidHeightMeters: Self.launchBaseEllipsoidHeightMeters
+        )
+        let renderFrame = EarthflightLocalFrame(originEcef: renderOriginEcef)
+        craftEcefPosition = craftEcef
+        longitudeDegrees = Self.launchLongitudeDegrees
+        latitudeDegrees = Self.launchLatitudeDegrees
+        ellipsoidHeightMeters = Self.launchCraftEllipsoidHeightMeters
+        ecefFromRenderLocal = renderFrame.ecefFromLocal
+        renderLocalFromEcef = renderFrame.localFromEcef
+        updateCartographic()
+    }
+
+    init(
+        longitudeDegrees: Double,
+        latitudeDegrees: Double,
+        ellipsoidHeightMeters: Double
+    ) {
+        let craftEcef = Self.ecefPosition(
+            longitudeDegrees: longitudeDegrees,
+            latitudeDegrees: latitudeDegrees,
+            ellipsoidHeightMeters: ellipsoidHeightMeters
+        )
+        let renderFrame = EarthflightLocalFrame(originEcef: craftEcef)
+        craftEcefPosition = craftEcef
+        self.longitudeDegrees = longitudeDegrees
+        self.latitudeDegrees = latitudeDegrees
+        self.ellipsoidHeightMeters = ellipsoidHeightMeters
+        ecefFromRenderLocal = renderFrame.ecefFromLocal
+        renderLocalFromEcef = renderFrame.localFromEcef
+        updateCartographic()
+    }
+
+    static func ecefPosition(
+        longitudeDegrees: Double,
+        latitudeDegrees: Double,
+        ellipsoidHeightMeters: Double
+    ) -> SIMD3<Double> {
+        CesiumBridge.ecefPosition(
+            withLongitudeDegrees: longitudeDegrees,
+            latitudeDegrees: latitudeDegrees,
+            ellipsoidHeightMeters: ellipsoidHeightMeters
+        )
+    }
+
+    var speedReferenceHeightMeters: Double {
+        max(
+            0,
+            EarthflightTuning.initialSpeedReferenceHeightMeters +
+                ellipsoidHeightMeters - Self.launchCraftEllipsoidHeightMeters
+        )
+    }
+
+    var originDistanceMeters: Double {
+        let origin = SIMD3<Double>(
+            ecefFromRenderLocal.columns.3.x,
+            ecefFromRenderLocal.columns.3.y,
+            ecefFromRenderLocal.columns.3.z
+        )
+        return simd_length(craftEcefPosition - origin)
+    }
+
+    var renderLocalPosition: SIMD3<Double> {
+        let position = renderLocalFromEcef * SIMD4<Double>(craftEcefPosition, 1)
+        return SIMD3(position.x, position.y, position.z)
+    }
+
+    var position: SIMD3<Float> {
+        let local = renderLocalPosition
+        return SIMD3(Float(local.x), Float(local.y), Float(local.z))
+    }
+
+    var ecefFromCraftLocalHorizontal: simd_double4x4 {
+        EarthflightLocalFrame(originEcef: craftEcefPosition).ecefFromLocal
+    }
+
+    var renderLocalFromCraft: simd_double4x4 {
+        // craft-local -> current WGS84 tangent frame applies the accepted attitude;
+        // tangent-local -> ECEF then ECEF -> render-local applies Earth curvature once.
+        renderLocalFromEcef * ecefFromCraftLocalHorizontal * localHorizontalFromCraft
+    }
+
     func keepAlive(_ subscription: EventSubscription) {
         updateSubscription = subscription
     }
 
-    // Physical right-stick click is an orientation escape hatch, not merely an
-    // auto-level command: restore the exact launch heading, pitch and roll while
-    // leaving the craft's global position and all movement inputs untouched.
+    // Physical right-stick click restores launch attitude while preserving the
+    // sole global position and all movement input state.
     func resetView() {
         headingRadians = 0
         pitchRadians = 0
@@ -68,57 +175,114 @@ final class FlightState {
         pitchRadians = min(max(pitchRadians, -maximumPitch), maximumPitch)
         rebuildOrientation()
 
-        // Milestone 5 remains in the fixed London frame, so height above nearby
-        // ground is an intentional approximation. Both horizontal and vertical
-        // speed must derive from it: localEarthPosition.y is only displacement
-        // from the 70 m London start and becomes misleading below that height.
-        let approximateHeightAboveGround = max(
-            0,
-            EarthflightTuning.londonStartingHeightAboveGroundMeters +
-                localEarthPosition.y - Self.initialLocalEarthPosition.y)
-        let horizontalSpeed = Float(
+        let horizontalSpeed = (
             EarthflightTuning.minimumHorizontalSpeedMetersPerSecond +
-                EarthflightTuning.horizontalHeightSpeedFactor * approximateHeightAboveGround
-        ) * EarthflightTuning.horizontalSpeedMultiplier * (isBoosting ? 4 : 1)
-        let localMovement = SIMD3<Float>(leftStick.x, 0, -leftStick.y)
-        let horizontalMovement = orientation.act(localMovement) * horizontalSpeed * dt
+                EarthflightTuning.horizontalHeightSpeedFactor * speedReferenceHeightMeters
+        ) * Double(EarthflightTuning.horizontalSpeedMultiplier) * (isBoosting ? 4 : 1)
+        let craftMovement = orientation.act(SIMD3<Float>(leftStick.x, 0, -leftStick.y))
+        let attitudeMovement = SIMD3<Double>(
+            Double(craftMovement.x),
+            Double(craftMovement.y),
+            Double(craftMovement.z)
+        ) * horizontalSpeed * Double(dt)
+
         let lowAltitudeVerticalSpeed = min(
             EarthflightTuning.maximumLowAltitudeVerticalSpeedMetersPerSecond,
             EarthflightTuning.minimumVerticalSpeedMetersPerSecond +
                 EarthflightTuning.lowAltitudeVerticalHeightSquaredSpeedFactor *
-                approximateHeightAboveGround * approximateHeightAboveGround)
+                speedReferenceHeightMeters * speedReferenceHeightMeters
+        )
         let highAltitudeExcess = max(
             0,
-            approximateHeightAboveGround -
-                EarthflightTuning.highAltitudeVerticalSpeedThresholdMeters)
+            speedReferenceHeightMeters - EarthflightTuning.highAltitudeVerticalSpeedThresholdMeters
+        )
         let verticalSpeed = min(
             EarthflightTuning.maximumVerticalSpeedMetersPerSecond,
             lowAltitudeVerticalSpeed +
                 EarthflightTuning.highAltitudeExcessSquaredSpeedFactor *
-                highAltitudeExcess * highAltitudeExcess)
+                highAltitudeExcess * highAltitudeExcess
+        )
         let verticalInput = Double((isAscending ? 1 : 0) - (isDescending ? 1 : 0))
         let verticalBoost: Double = isBoosting ? 4 : 1
-        let verticalMovement = SIMD3<Double>(
+        let geodeticVerticalMovement = SIMD3<Double>(
             0,
             verticalInput * verticalSpeed * verticalBoost * Double(dt),
             0
         )
 
-        localEarthPosition += SIMD3<Double>(
-            Double(horizontalMovement.x),
-            Double(horizontalMovement.y),
-            Double(horizontalMovement.z)
-        ) + verticalMovement
+        integrate(localDisplacement: attitudeMovement + geodeticVerticalMovement)
+    }
+
+    @discardableResult
+    func rebaseIfNeeded() -> Bool {
+        guard originDistanceMeters >= EarthflightTuning.renderOriginRebaseDistanceMeters else {
+            return false
+        }
+        let newFrame = EarthflightLocalFrame(originEcef: craftEcefPosition)
+        ecefFromRenderLocal = newFrame.ecefFromLocal
+        renderLocalFromEcef = newFrame.localFromEcef
+        rebaseCount += 1
+        return true
+    }
+
+    private func integrate(localDisplacement: SIMD3<Double>) {
+        let horizontalDistance = simd_length(
+            SIMD2<Double>(localDisplacement.x, localDisplacement.z)
+        )
+        let stepCount = max(
+            1,
+            Int(ceil(horizontalDistance / Self.maximumSpatialIntegrationStepMeters))
+        )
+        let step = localDisplacement / Double(stepCount)
+
+        for _ in 0..<stepCount {
+            let currentFrame = EarthflightLocalFrame(originEcef: craftEcefPosition)
+            let horizontalCandidateEcef4 = currentFrame.ecefFromLocal *
+                SIMD4<Double>(step.x, 0, step.z, 1)
+            let horizontalCandidateEcef = SIMD3<Double>(
+                horizontalCandidateEcef4.x,
+                horizontalCandidateEcef4.y,
+                horizontalCandidateEcef4.z
+            )
+            let candidateCartographic = CesiumBridge.cartographicDegrees(
+                fromEcefPosition: horizontalCandidateEcef
+            )
+            precondition(
+                candidateCartographic.x.isFinite &&
+                    candidateCartographic.y.isFinite &&
+                    candidateCartographic.z.isFinite,
+                "Cesium could not convert the integrated ECEF craft position"
+            )
+            // Horizontal tangent motion selects the next lon/lat, then the ECEF
+            // position is reconstructed at only the explicitly intended height.
+            // This removes tangent-chord altitude gain while retaining pitch-induced
+            // local-up motion and independent ZL/ZR geodetic vertical motion.
+            craftEcefPosition = Self.ecefPosition(
+                longitudeDegrees: candidateCartographic.x,
+                latitudeDegrees: candidateCartographic.y,
+                ellipsoidHeightMeters: ellipsoidHeightMeters + step.y
+            )
+            updateCartographic()
+        }
+    }
+
+    private func updateCartographic() {
+        let cartographic = CesiumBridge.cartographicDegrees(
+            fromEcefPosition: craftEcefPosition
+        )
+        precondition(
+            cartographic.x.isFinite && cartographic.y.isFinite && cartographic.z.isFinite,
+            "Cesium could not derive WGS84 cartographic coordinates from craft ECEF"
+        )
+        longitudeDegrees = cartographic.x
+        latitudeDegrees = cartographic.y
+        ellipsoidHeightMeters = cartographic.z
     }
 
     private func rebuildOrientation() {
-        // Build local-to-London axes directly from independent heading, pitch and
-        // roll state. With roll == 0 the right axis has exactly zero world-up
-        // component for every heading and pitch, so diagonal right-stick input
-        // cannot bank the horizon. Only the shoulder-controlled roll angle can.
-        // Do not replace this with per-frame yaw * orientation * pitch accumulation:
-        // keeping roll implicit in one quaternion previously made this regression
-        // difficult to see and allowed coupled right-stick input to deform the view.
+        // Build craft-local -> current local-horizontal axes from independent
+        // heading, pitch, and roll. With roll == 0 the right axis has zero local-up
+        // component, including during simultaneous yaw and pitch input.
         let headingCosine = cos(headingRadians)
         let headingSine = sin(headingRadians)
         let pitchCosine = cos(pitchRadians)
@@ -143,27 +307,41 @@ final class FlightState {
         orientation = simd_quatf(simd_float3x3(columns: (right, up, backward)))
     }
 
-    var localEarthFromCraftDelta: simd_float4x4 {
-        let realityKitCraftPosition = SIMD3<Float>(
-            Float(localEarthPosition.x),
-            Float(localEarthPosition.y),
-            Float(localEarthPosition.z)
-        )
-        let realityKitInitialCraftPosition = SIMD3<Float>(
-            Float(Self.initialLocalEarthPosition.x),
-            Float(Self.initialLocalEarthPosition.y),
-            Float(Self.initialLocalEarthPosition.z)
-        )
-        let localEarthFromCraft = Transform(
-            rotation: orientation,
-            translation: realityKitCraftPosition
-        ).matrix
-        let localEarthFromInitialCraft = Transform(
-            translation: realityKitInitialCraftPosition
-        ).matrix
-        // currentCraft * inverse(initialCraft) keeps rotations centred on the
-        // initial eye-height craft position instead of incorrectly orbiting the
-        // immersive world's floor origin.
-        return localEarthFromCraft * localEarthFromInitialCraft.inverse
+    private var localHorizontalFromCraft: simd_double4x4 {
+        let rotation = simd_float3x3(orientation)
+        var matrix = matrix_identity_double4x4
+        for column in 0..<3 {
+            for row in 0..<3 {
+                matrix[column][row] = Double(rotation[column][row])
+            }
+        }
+        return matrix
+    }
+
+    static func worldFromRenderLocal(
+        worldFromCraftAtLaunch: simd_double4x4,
+        renderLocalFromCraft: simd_double4x4
+    ) -> simd_double4x4 {
+        worldFromCraftAtLaunch * renderLocalFromCraft.inverse
+    }
+
+    static func realityKitMatrix(_ matrix: simd_double4x4) -> simd_float4x4 {
+        var result = matrix_identity_float4x4
+        for column in 0..<4 {
+            for row in 0..<4 {
+                result[column][row] = Float(matrix[column][row])
+            }
+        }
+        return result
+    }
+
+    static func doubleMatrix(_ matrix: simd_float4x4) -> simd_double4x4 {
+        var result = matrix_identity_double4x4
+        for column in 0..<4 {
+            for row in 0..<4 {
+                result[column][row] = Double(matrix[column][row])
+            }
+        }
+        return result
     }
 }

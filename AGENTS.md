@@ -603,6 +603,16 @@ A mismatch between the Cesium selection pose and the RealityKit rendered pose ca
 
 Continue dispatching Cesium main-thread tasks before each view update. Preserve tile visibility semantics, asynchronous generation cancellation and current-render-set attribution while the selection changes every frame.
 
+### Milestone 5 completion notes
+
+Established and physically accepted on the original M2 Vision Pro on 1 September 2026:
+
+* Dynamic Google Photorealistic 3D Tile streaming works during controller flight, with Cesium selecting and showing the current render set as the craft moves.
+* The combined craft-plus-head centre-eye pose drives Cesium selection while head movement remains independent of craft position, orientation and flight direction.
+* The inverse local Earth-root transform remains coherent with the Cesium view, so rendered motion, refinement and nearby detail stay aligned.
+* The accepted Switch Pro flight controls, hard orientation reset, blue-gradient sky dome, visible Google branding and current dynamic attribution are all working together in the immersive experience.
+* Resource use is bounded during normal dynamic streaming.
+
 ### Settled Milestone 5 flight and presentation behavior
 
 Treat these as accepted implementation contracts. Do not redesign them during Milestone 6 merely because another representation appears more physically realistic.
@@ -620,6 +630,16 @@ Treat these as accepted implementation contracts. Do not redesign them during Mi
 * Reliable altitude.
 * Flight across larger distances.
 * Profiling and M2 device tuning only where measured.
+
+### Milestone 6 completion notes
+
+Established in the working Milestone 6 build:
+
+* Craft position remains in WGS84 ECEF double precision, with a new local east/north/up render frame derived from the craft position when rebasing.
+* The Earth render origin rebases after 50 km of ECEF displacement, keeping RealityKit transforms metre-scale without moving the system-controlled camera.
+* Horizontal integration uses the local tangent frame in bounded 10 km steps, then reconstructs ECEF at the intended WGS84 ellipsoid height to avoid chord-induced altitude gain.
+* The renderer receives the updated ECEF-to-render-local transform on each rebase, preserving the accepted craft, Earth-root and Cesium-view pose coherence across large-distance flight.
+* Ellipsoid height is the authoritative flight altitude, while the existing speed reference remains explicitly separate from terrain height or AGL.
 
 Milestone 6 must extend the accepted Milestone 5 coordinate range without breaking its Earth-root/Cesium-view pose coherence, independent head look, attitude invariants, sky presentation or transform regression test.
 

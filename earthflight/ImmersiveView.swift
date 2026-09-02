@@ -9,18 +9,33 @@ struct ImmersiveView: View {
     @State private var switchController: SwitchController?
     @State private var headTracking = HeadTracking()
     @State private var attribution = ""
+#if DEBUG
+    @State private var debugTelemetry = DebugTelemetry()
+#endif
 
     var body: some View {
-        RealityView { content in
-            let googleRenderer = GoogleTileRenderer()
+        RealityView { content, attachments in
             let state = flightState
+            let googleRenderer = GoogleTileRenderer(
+                renderLocalFromEcef: state.renderLocalFromEcef
+            )
             let skyDome = await Self.makeSkyDome()
             skyDome.position = state.position
             googleRenderer.earthRoot.addChild(skyDome)
             content.add(googleRenderer.earthRoot)
 
+#if DEBUG
+            if let telemetryEntity = attachments.entity(for: "PlanetaryTelemetry") {
+                // Immersive-world metres relative to the launch origin: half a metre
+                // left, 1.5 metres up, and 1.5 metres in front of the wearer.
+                telemetryEntity.position = [-0.5, 1.5, -1.5]
+                telemetryEntity.components.set(BillboardComponent())
+                content.add(telemetryEntity)
+            }
+#endif
+
             let apiKey = Bundle.main.object(forInfoDictionaryKey: "GoogleMapsAPIKey") as? String ?? ""
-            CesiumBridge.startLondonTiles(
+            CesiumBridge.startTiles(
                 withAPIKey: apiKey,
                 maximumScreenSpaceError: EarthflightTuning.maximumScreenSpaceError,
                 maximumCachedBytes: EarthflightTuning.maximumCachedBytes,
@@ -39,23 +54,38 @@ struct ImmersiveView: View {
             )
 
             let tracking = headTracking
-            // Milestone 4 installed the fixed-London Earth root directly in
-            // immersive world space. Preserve that validated placement exactly.
-            let baseWorldFromLocalEarth = googleRenderer.earthRoot.transform.matrix
+            // render-local -> immersive world at launch is the physically accepted
+            // Milestone 5 placement. Compose it with launch craft-local -> render-local
+            // so the resulting craft pose remains fixed through movement and rebases.
+            let initialWorldFromRenderLocal = FlightState.doubleMatrix(
+                googleRenderer.earthRoot.transform.matrix
+            )
+            let worldFromCraftAtLaunch =
+                initialWorldFromRenderLocal * state.renderLocalFromCraft
             var debugElapsed: TimeInterval = 0
 
             let subscription = content.subscribe(to: SceneEvents.Update.self) { event in
                 state.advance(deltaTime: event.deltaTime)
+                if state.rebaseIfNeeded() {
+                    googleRenderer.setRenderFrame(
+                        renderLocalFromEcef: state.renderLocalFromEcef
+                    )
+                }
                 // The dome shares the Earth-root rotation but stays centred on the
-                // virtual craft, so it cannot be reached by flying through London.
+                // virtual craft in the current render frame.
                 skyDome.position = state.position
 
-                // localEarthFromCraftDelta is craft-local -> fixed London local,
-                // in metres, right-handed x=east/y=up/z=-north. Multiplication is
-                // right-to-left: first undo craft motion, then apply the calibrated
-                // Milestone 4 Earth placement in immersive world space.
-                let worldFromLocalEarth = baseWorldFromLocalEarth * state.localEarthFromCraftDelta.inverse
-                googleRenderer.earthRoot.transform = Transform(matrix: worldFromLocalEarth)
+                // render-local -> world = fixed world-from-launch-craft followed by
+                // inverse(current render-local-from-craft). Double is retained until
+                // assigning RealityKit's metre-scale Float Earth-root transform.
+                let worldFromRenderLocalDouble = FlightState.worldFromRenderLocal(
+                    worldFromCraftAtLaunch: worldFromCraftAtLaunch,
+                    renderLocalFromCraft: state.renderLocalFromCraft
+                )
+                let worldFromRenderLocal = FlightState.realityKitMatrix(
+                    worldFromRenderLocalDouble
+                )
+                googleRenderer.earthRoot.transform = Transform(matrix: worldFromRenderLocal)
 
                 guard let worldFromHead = tracking.currentWorldFromHead() else {
                     return
@@ -64,33 +94,35 @@ struct ImmersiveView: View {
                 // Derive Cesium's virtual camera from the exact rendered relationship.
                 // Head translation/orientation affects selection but is never written
                 // into FlightState or the Earth-root transform.
-                let localEarthFromHead = worldFromLocalEarth.inverse * worldFromHead
-                let localCameraPosition = SIMD3<Double>(
-                    Double(localEarthFromHead.columns.3.x),
-                    Double(localEarthFromHead.columns.3.y),
-                    Double(localEarthFromHead.columns.3.z)
+                let renderLocalFromHead =
+                    worldFromRenderLocal.inverse * worldFromHead
+                let ecefFromHead = state.ecefFromRenderLocal *
+                    FlightState.doubleMatrix(renderLocalFromHead)
+                let ecefCameraPosition = SIMD3<Double>(
+                    ecefFromHead.columns.3.x,
+                    ecefFromHead.columns.3.y,
+                    ecefFromHead.columns.3.z
                 )
-                let localDirection4 = localEarthFromHead * SIMD4<Float>(0, 0, -1, 0)
-                let localUp4 = localEarthFromHead * SIMD4<Float>(0, 1, 0, 0)
-                let localCameraDirection = simd_normalize(
-                    SIMD3<Float>(localDirection4.x, localDirection4.y, localDirection4.z))
-                let localCameraUp = simd_normalize(
-                    SIMD3<Float>(localUp4.x, localUp4.y, localUp4.z))
-                let localCameraRight = simd_normalize(
-                    simd_cross(localCameraDirection, localCameraUp))
-                let craftUp = state.orientation.act(SIMD3<Float>(0, 1, 0))
-                let craftRight = state.orientation.act(SIMD3<Float>(1, 0, 0))
+                let ecefDirection4 = ecefFromHead * SIMD4<Double>(0, 0, -1, 0)
+                let ecefUp4 = ecefFromHead * SIMD4<Double>(0, 1, 0, 0)
+                let ecefCameraDirection = simd_normalize(
+                    SIMD3<Double>(ecefDirection4.x, ecefDirection4.y, ecefDirection4.z)
+                )
+                var ecefCameraUp = SIMD3<Double>(ecefUp4.x, ecefUp4.y, ecefUp4.z)
+                ecefCameraUp -= simd_dot(ecefCameraUp, ecefCameraDirection) *
+                    ecefCameraDirection
+                ecefCameraUp = simd_normalize(ecefCameraUp)
 
-                CesiumBridge.updateLondonTiles(
-                    withCameraPositionX: localCameraPosition.x,
-                    positionY: localCameraPosition.y,
-                    positionZ: localCameraPosition.z,
-                    directionX: Double(localCameraDirection.x),
-                    directionY: Double(localCameraDirection.y),
-                    directionZ: Double(localCameraDirection.z),
-                    upX: Double(localCameraUp.x),
-                    upY: Double(localCameraUp.y),
-                    upZ: Double(localCameraUp.z),
+                CesiumBridge.updateTiles(
+                    withEcefCameraPositionX: ecefCameraPosition.x,
+                    positionY: ecefCameraPosition.y,
+                    positionZ: ecefCameraPosition.z,
+                    directionX: ecefCameraDirection.x,
+                    directionY: ecefCameraDirection.y,
+                    directionZ: ecefCameraDirection.z,
+                    upX: ecefCameraUp.x,
+                    upY: ecefCameraUp.y,
+                    upZ: ecefCameraUp.z,
                     deltaTime: event.deltaTime
                 )
 
@@ -98,16 +130,49 @@ struct ImmersiveView: View {
                 debugElapsed += event.deltaTime
                 if debugElapsed >= 1 {
                     debugElapsed = 0
+                    debugTelemetry = DebugTelemetry(
+                        latitudeDegrees: state.latitudeDegrees,
+                        longitudeDegrees: state.longitudeDegrees,
+                        ellipsoidHeightMeters: state.ellipsoidHeightMeters,
+                        originDistanceMeters: state.originDistanceMeters,
+                        rebaseCount: state.rebaseCount
+                    )
                     print(
-                        "Flight local=\(state.localEarthPosition) cameraLocal=\(localCameraPosition) " +
-                        "cameraForward=\(localCameraDirection) craftUp=\(craftUp) " +
-                        "craftRightY=\(craftRight.y) cameraRightY=\(localCameraRight.y) " +
+                        "Planetary lat=\(state.latitudeDegrees) lon=\(state.longitudeDegrees) " +
+                        "ellipsoid=\(state.ellipsoidHeightMeters) " +
+                        "speedReference=\(state.speedReferenceHeightMeters) " +
+                        "originDistance=\(state.originDistanceMeters) rebases=\(state.rebaseCount) " +
+                        "craftLocal=\(state.renderLocalPosition) " +
                         googleRenderer.debugResourceSummary
                     )
                 }
 #endif
             }
             state.keepAlive(subscription)
+        } attachments: {
+#if DEBUG
+            Attachment(id: "PlanetaryTelemetry") {
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(verbatim: String(
+                        format: "Lat/Lon: %.5f°, %.5f°",
+                        debugTelemetry.latitudeDegrees,
+                        debugTelemetry.longitudeDegrees
+                    ))
+                    Text(verbatim: String(
+                        format: "Ellipsoid: %.1f m",
+                        debugTelemetry.ellipsoidHeightMeters
+                    ))
+                    Text(verbatim: String(
+                        format: "Origin distance: %.2f km",
+                        debugTelemetry.originDistanceMeters / 1_000
+                    ))
+                    Text(verbatim: "Rebases: \(debugTelemetry.rebaseCount)")
+                }
+                .font(.caption.monospacedDigit())
+                .padding(8)
+                .background(.black.opacity(0.55), in: .rect(cornerRadius: 8))
+            }
+#endif
         }
         .overlay(alignment: .bottomTrailing) {
             GoogleAttributionView(attribution: attribution)
@@ -120,6 +185,16 @@ struct ImmersiveView: View {
             await headTracking.start()
         }
     }
+
+#if DEBUG
+    private struct DebugTelemetry {
+        var latitudeDegrees = FlightState.launchLatitudeDegrees
+        var longitudeDegrees = FlightState.launchLongitudeDegrees
+        var ellipsoidHeightMeters = FlightState.launchCraftEllipsoidHeightMeters
+        var originDistanceMeters = 1.5
+        var rebaseCount = 0
+    }
+#endif
 
     private static func makeSkyDome() async -> ModelEntity {
         let rendererFormat = UIGraphicsImageRendererFormat()
@@ -154,7 +229,7 @@ struct ImmersiveView: View {
         material.faceCulling = .front
 
         return ModelEntity(
-            mesh: .generateSphere(radius: 100_000),
+            mesh: .generateSphere(radius: EarthflightTuning.skyDomeRadiusMeters),
             materials: [material]
         )
     }

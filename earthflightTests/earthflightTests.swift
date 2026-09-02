@@ -59,10 +59,11 @@ struct EarthflightTests {
         #expect(abs(craftRight.y) < 0.0001)
     }
 
-    @Test("Craft delta keeps the rendered Earth transform centred on the craft")
+    @Test("Earth-root transform keeps the rendered craft at its launch pose")
     @MainActor
     func craftDeltaTransformCoherence() {
         let flightState = FlightState()
+        let worldFromCraftAtLaunch = flightState.renderLocalFromCraft
         flightState.rightStick = [0.4, -0.3]
         flightState.leftStick = [0.7, 1]
 
@@ -70,25 +71,16 @@ struct EarthflightTests {
             flightState.advance(deltaTime: 1.0 / 60.0)
         }
 
-        let initialCraftPosition = SIMD4<Float>(0, 1.5, 0, 1)
-        let currentCraftPosition = SIMD4<Float>(flightState.position, 1)
-        let mappedCurrentPosition =
-            flightState.localEarthFromCraftDelta * initialCraftPosition
-        let restoredInitialPosition =
-            flightState.localEarthFromCraftDelta.inverse * currentCraftPosition
+        let worldFromRenderLocal = FlightState.worldFromRenderLocal(
+            worldFromCraftAtLaunch: worldFromCraftAtLaunch,
+            renderLocalFromCraft: flightState.renderLocalFromCraft
+        )
+        let representedCraft = worldFromRenderLocal * flightState.renderLocalFromCraft
+        let restoredRenderLocalFromCraft =
+            worldFromRenderLocal.inverse * worldFromCraftAtLaunch
 
-        #expect(
-            simd_length(
-                SIMD3<Float>(mappedCurrentPosition.x, mappedCurrentPosition.y, mappedCurrentPosition.z) -
-                    flightState.position
-            ) < 0.001
-        )
-        #expect(
-            simd_length(
-                SIMD3<Float>(restoredInitialPosition.x, restoredInitialPosition.y, restoredInitialPosition.z) -
-                    SIMD3<Float>(0, 1.5, 0)
-            ) < 0.001
-        )
+        #expect(matrixDistance(representedCraft, worldFromCraftAtLaunch) < 1e-8)
+        #expect(matrixDistance(restoredRenderLocalFromCraft, flightState.renderLocalFromCraft) < 1e-8)
     }
 
     @Test("View reset restores the starting orientation")
@@ -164,9 +156,164 @@ struct EarthflightTests {
         #expect(otherHostURL == "https://example.com/tile.glb?session=abc123")
     }
 
-    @Test("London ENU origin remains metre-scale and east points along local X")
-    func londonLocalFrame() {
-        #expect(CesiumBridge.runLondonLocalFrameSmokeTest() == "London local ENU frame: OK")
+    @Test("Local horizontal origin and RealityKit axes remain metre-scale")
+    func localHorizontalFrame() {
+        #expect(
+            CesiumBridge.runLocalHorizontalFrameSmokeTest() ==
+                "RealityKit local horizontal frame: OK"
+        )
+    }
+
+    @Test("Floating-origin changes preserve represented craft and anchored geometry")
+    @MainActor
+    func floatingOriginInvariance() {
+        let craftEcefPosition = FlightState.ecefPosition(
+            longitudeDegrees: 0.35,
+            latitudeDegrees: 51.7,
+            ellipsoidHeightMeters: 1_250
+        )
+        let objectEcefPosition = FlightState.ecefPosition(
+            longitudeDegrees: 0.351,
+            latitudeDegrees: 51.701,
+            ellipsoidHeightMeters: 320
+        )
+        let renderFrameA = EarthflightLocalFrame(
+            originEcef: FlightState.ecefPosition(
+                longitudeDegrees: -0.1278,
+                latitudeDegrees: 51.5074,
+                ellipsoidHeightMeters: 120
+            )
+        )
+        let renderFrameB = EarthflightLocalFrame(originEcef: craftEcefPosition)
+        let ecefFromCraft = EarthflightLocalFrame(originEcef: craftEcefPosition).ecefFromLocal
+        let renderLocalFromCraftA = renderFrameA.localFromEcef * ecefFromCraft
+        let renderLocalFromCraftB = renderFrameB.localFromEcef * ecefFromCraft
+        var worldFromCraftAtLaunch = matrix_identity_double4x4
+        worldFromCraftAtLaunch.columns.3 = SIMD4<Double>(2.5, 1.5, -4, 1)
+
+        let worldFromRenderLocalA = FlightState.worldFromRenderLocal(
+            worldFromCraftAtLaunch: worldFromCraftAtLaunch,
+            renderLocalFromCraft: renderLocalFromCraftA
+        )
+        let worldFromRenderLocalB = FlightState.worldFromRenderLocal(
+            worldFromCraftAtLaunch: worldFromCraftAtLaunch,
+            renderLocalFromCraft: renderLocalFromCraftB
+        )
+        let representedCraftA = worldFromRenderLocalA * renderLocalFromCraftA
+        let representedCraftB = worldFromRenderLocalB * renderLocalFromCraftB
+
+        #expect(matrixDistance(representedCraftA, worldFromCraftAtLaunch) < 1e-8)
+        #expect(matrixDistance(representedCraftB, worldFromCraftAtLaunch) < 1e-8)
+
+        let objectInRenderA = renderFrameA.localFromEcef * SIMD4<Double>(objectEcefPosition, 1)
+        let objectInRenderB = renderFrameB.localFromEcef * SIMD4<Double>(objectEcefPosition, 1)
+        let representedObjectA = FlightState.realityKitMatrix(worldFromRenderLocalA) *
+            SIMD4<Float>(Float(objectInRenderA.x), Float(objectInRenderA.y), Float(objectInRenderA.z), 1)
+        let representedObjectB = FlightState.realityKitMatrix(worldFromRenderLocalB) *
+            SIMD4<Float>(Float(objectInRenderB.x), Float(objectInRenderB.y), Float(objectInRenderB.z), 1)
+
+        // At the 50 km rebase scale, Float ULP and two matrix products remain well
+        // below two centimetres. A larger tolerance would conceal visible bad maths.
+        #expect(simd_length(representedObjectA - representedObjectB) < 0.02)
+    }
+
+    @Test("Planetary movement preserves local-frame and ellipsoid-height invariants")
+    @MainActor
+    func planetaryMovementAndLocalFrameStability() {
+        let representativePositions = [
+            (-0.1278, 51.5074, 121.5),
+            (12.0, 20.0, 5_000.0),
+            (179.999, 0.0, 300.0),
+            (40.0, 80.0, 800.0)
+        ]
+
+        for (longitude, latitude, height) in representativePositions {
+            let ecef = FlightState.ecefPosition(
+                longitudeDegrees: longitude,
+                latitudeDegrees: latitude,
+                ellipsoidHeightMeters: height
+            )
+            let frame = EarthflightLocalFrame(originEcef: ecef)
+            let localPoint = SIMD4<Double>(1_234.5, -67.0, 8_901.25, 1)
+            let roundTripped = frame.localFromEcef * (frame.ecefFromLocal * localPoint)
+            let x = SIMD3<Double>(frame.ecefFromLocal.columns.0.x,
+                                  frame.ecefFromLocal.columns.0.y,
+                                  frame.ecefFromLocal.columns.0.z)
+            let y = SIMD3<Double>(frame.ecefFromLocal.columns.1.x,
+                                  frame.ecefFromLocal.columns.1.y,
+                                  frame.ecefFromLocal.columns.1.z)
+            let z = SIMD3<Double>(frame.ecefFromLocal.columns.2.x,
+                                  frame.ecefFromLocal.columns.2.y,
+                                  frame.ecefFromLocal.columns.2.z)
+
+            #expect(simd_length(roundTripped - localPoint) < 1e-6)
+            #expect(x.x.isFinite && x.y.isFinite && x.z.isFinite)
+            #expect(y.x.isFinite && y.y.isFinite && y.z.isFinite)
+            #expect(z.x.isFinite && z.y.isFinite && z.z.isFinite)
+            #expect(abs(simd_length(x) - 1) < 1e-12)
+            #expect(abs(simd_length(y) - 1) < 1e-12)
+            #expect(abs(simd_length(z) - 1) < 1e-12)
+            #expect(abs(simd_dot(x, y)) < 1e-12)
+            #expect(abs(simd_dot(y, z)) < 1e-12)
+            #expect(abs(simd_dot(z, x)) < 1e-12)
+        }
+
+        let levelFlight = FlightState()
+        let levelStartHeight = levelFlight.ellipsoidHeightMeters
+        levelFlight.leftStick = [0.7, 1]
+        for _ in 0..<5_000 {
+            levelFlight.advance(deltaTime: 0.1)
+        }
+        #expect(abs(levelFlight.ellipsoidHeightMeters - levelStartHeight) < 0.01)
+
+        let highLatitudeFlight = FlightState(
+            longitudeDegrees: 40,
+            latitudeDegrees: 80,
+            ellipsoidHeightMeters: 800
+        )
+        highLatitudeFlight.leftStick = [0.6, 1]
+        for _ in 0..<1_000 {
+            highLatitudeFlight.advance(deltaTime: 0.1)
+        }
+        #expect(highLatitudeFlight.longitudeDegrees.isFinite)
+        #expect(highLatitudeFlight.latitudeDegrees.isFinite)
+        #expect(abs(highLatitudeFlight.ellipsoidHeightMeters - 800) < 0.01)
+
+        let antimeridianFlight = FlightState(
+            longitudeDegrees: 179.999,
+            latitudeDegrees: 0,
+            ellipsoidHeightMeters: 300
+        )
+        antimeridianFlight.leftStick = [1, 0]
+        for _ in 0..<100 {
+            antimeridianFlight.advance(deltaTime: 0.1)
+        }
+        #expect(antimeridianFlight.longitudeDegrees >= -180)
+        #expect(antimeridianFlight.longitudeDegrees <= 180)
+        #expect(antimeridianFlight.longitudeDegrees < -179)
+        #expect(antimeridianFlight.latitudeDegrees.isFinite)
+        #expect(antimeridianFlight.ellipsoidHeightMeters.isFinite)
+
+        let verticalFlight = FlightState()
+        let verticalStartHeight = verticalFlight.ellipsoidHeightMeters
+        verticalFlight.isAscending = true
+        verticalFlight.advance(deltaTime: 0.1)
+        verticalFlight.isAscending = false
+        let ascendedHeight = verticalFlight.ellipsoidHeightMeters
+        verticalFlight.isDescending = true
+        verticalFlight.advance(deltaTime: 0.1)
+
+        #expect(ascendedHeight > verticalStartHeight)
+        #expect(verticalFlight.ellipsoidHeightMeters < ascendedHeight)
+
+        let pitchedFlight = FlightState()
+        pitchedFlight.rightStick = [0, -0.8]
+        pitchedFlight.advance(deltaTime: 0.1)
+        pitchedFlight.rightStick = .zero
+        let pitchedStartHeight = pitchedFlight.ellipsoidHeightMeters
+        pitchedFlight.leftStick = [0, 1]
+        pitchedFlight.advance(deltaTime: 0.1)
+        #expect(pitchedFlight.ellipsoidHeightMeters > pitchedStartHeight)
     }
 
     @Test("glTF texture transforms are applied before RealityKit's V conversion")
@@ -183,5 +330,14 @@ struct EarthflightTests {
 
         #expect(abs(converted[0].doubleValue - 0.4) < 0.000001)
         #expect(abs(converted[1].doubleValue - 0.7) < 0.000001)
+    }
+
+    private func matrixDistance(_ lhs: simd_double4x4, _ rhs: simd_double4x4) -> Double {
+        max(
+            simd_length(lhs.columns.0 - rhs.columns.0),
+            simd_length(lhs.columns.1 - rhs.columns.1),
+            simd_length(lhs.columns.2 - rhs.columns.2),
+            simd_length(lhs.columns.3 - rhs.columns.3)
+        )
     }
 }

@@ -16,7 +16,7 @@
 #include <CesiumAsync/ITaskProcessor.h>
 #include <CesiumGeospatial/Cartographic.h>
 #include <CesiumGeospatial/Ellipsoid.h>
-#include <CesiumGeospatial/GlobeTransforms.h>
+#include <CesiumGeospatial/LocalHorizontalCoordinateSystem.h>
 #include <CesiumUtility/CreditSystem.h>
 
 #include <algorithm>
@@ -43,6 +43,7 @@
 @property (nonatomic, readwrite) NSInteger samplerMinFilter;
 @property (nonatomic, readwrite) NSInteger samplerMagFilter;
 @property (nonatomic, readwrite) BOOL doubleSided;
+@property (nonatomic, readwrite) simd_double4x4 ecefFromPrimitiveLocal;
 @end
 
 @implementation CesiumPrimitivePayload
@@ -57,13 +58,41 @@ void (^attributionChanged)(NSString *);
 std::shared_ptr<CesiumUtility::CreditSystem> creditSystem;
 std::string lastAttribution;
 
-// Validated Milestone 4 RealityKit local origin in fixed central London.
-constexpr double staticLondonEllipsoidHeightMeters = 120.0;
-
 struct TileRenderResources {
     __strong NSString *identifier;
     __strong NSArray<CesiumPrimitivePayload *> *primitives;
 };
+
+CesiumGeospatial::LocalHorizontalCoordinateSystem makeRealityKitLocalFrame(
+    const glm::dvec3& originEcef) {
+    // Right-handed, metre-scale RealityKit convention: X=east, Y=geodetic up,
+    // Z=south (-north). Cesium owns the WGS84 tangent-frame construction.
+    return CesiumGeospatial::LocalHorizontalCoordinateSystem(
+        originEcef,
+        CesiumGeospatial::LocalDirection::East,
+        CesiumGeospatial::LocalDirection::Up,
+        CesiumGeospatial::LocalDirection::South,
+        1.0,
+        CesiumGeospatial::Ellipsoid::WGS84);
+}
+
+simd_double3 simdVectorFromGlm(const glm::dvec3& value) {
+    return simd_make_double3(value.x, value.y, value.z);
+}
+
+glm::dvec3 glmVectorFromSimd(simd_double3 value) {
+    return {value.x, value.y, value.z};
+}
+
+simd_double4x4 simdMatrixFromGlm(const glm::dmat4& matrix) {
+    simd_double4x4 result;
+    for (int column = 0; column < 4; ++column) {
+        for (int row = 0; row < 4; ++row) {
+            result.columns[column][row] = matrix[column][row];
+        }
+    }
+    return result;
+}
 
 class DispatchTaskProcessor final : public CesiumAsync::ITaskProcessor {
 public:
@@ -285,13 +314,6 @@ public:
         if (result.state == Cesium3DTilesSelection::TileLoadResultState::Success && std::holds_alternative<CesiumGltf::Model>(result.contentKind)) {
             CesiumGltf::Model& model = std::get<CesiumGltf::Model>(result.contentKind);
             NSMutableArray<CesiumPrimitivePayload *> *payloads = [NSMutableArray array];
-            // Fixed Milestone 4 local origin in WGS84 ellipsoid metres.
-            const auto london = CesiumGeospatial::Cartographic::fromDegrees(
-                -0.1278,
-                51.5074,
-                staticLondonEllipsoidHeightMeters);
-            const glm::dvec3 origin = CesiumGeospatial::Ellipsoid::WGS84.cartographicToCartesian(london);
-            const glm::dmat4 ecefToEnu = glm::inverse(CesiumGeospatial::GlobeTransforms::eastNorthUpToFixedFrame(origin));
             // glTF vertex data is relative to the model's CESIUM_RTC centre. Cesium keeps
             // that centre in the decoded model extension rather than folding it into the
             // 3D Tiles tile transform passed to this callback.
@@ -325,22 +347,42 @@ public:
                 std::vector<glm::dvec2> uvs;
                 if (positions.status() != CesiumGltf::AccessorViewStatus::Valid ||
                     !decodeUVs(gltf, uvIt->second, uvs) ||
+                    positions.size() == 0 ||
                     static_cast<size_t>(positions.size()) != uvs.size()) return;
                 const CesiumGltf::Texture *texture = CesiumGltf::Model::getSafe(&gltf.textures, baseColorTexture.index);
                 const CesiumGltf::Image *image = texture ? CesiumGltf::Model::getSafe(&gltf.images, texture->source) : nullptr;
                 if (!image || !image->pAsset || image->pAsset->channels != 4 || image->pAsset->bytesPerChannel != 1) return;
+                std::vector<glm::dvec3> ecefPositions(static_cast<size_t>(positions.size()));
+                glm::dvec3 primitiveAnchorEcef(0.0);
+                for (int64_t i = 0; i < positions.size(); ++i) {
+                    const glm::dvec4 ecef =
+                        modelToEcef * nodeTransform * glm::dvec4(positions[i], 1.0);
+                    ecefPositions[static_cast<size_t>(i)] = glm::dvec3(ecef);
+                    primitiveAnchorEcef += glm::dvec3(ecef);
+                }
+                primitiveAnchorEcef /= static_cast<double>(positions.size());
+                // A coarse primitive can span enough globe that its arithmetic mean
+                // approaches Earth centre. In that pathological case a real vertex is
+                // a safer stable surface-near anchor than a non-geographic mean.
+                if (glm::length(primitiveAnchorEcef) <
+                    CesiumGeospatial::Ellipsoid::WGS84.getMinimumRadius() * 0.5) {
+                    primitiveAnchorEcef = ecefPositions.front();
+                }
+                const CesiumGeospatial::LocalHorizontalCoordinateSystem primitiveFrame =
+                    makeRealityKitLocalFrame(primitiveAnchorEcef);
                 NSMutableData *positionData = [NSMutableData dataWithLength:positions.size() * sizeof(float) * 3];
                 NSMutableData *uvData = [NSMutableData dataWithLength:uvs.size() * sizeof(float) * 2];
                 float *outPositions = static_cast<float *>(positionData.mutableBytes);
                 float *outUVs = static_cast<float *>(uvData.mutableBytes);
                 for (int64_t i = 0; i < positions.size(); ++i) {
-                    const glm::dvec4 ecef = modelToEcef * nodeTransform * glm::dvec4(positions[i], 1.0);
-                    const glm::dvec3 enu = glm::dvec3(ecefToEnu * ecef);
-                    // ENU (+east,+north,+up) maps to RealityKit (+x,+y,-z), preserving right-handed local space.
-                    const glm::dvec3 realityPosition(enu.x, enu.z, -enu.y);
-                    outPositions[i * 3] = static_cast<float>(realityPosition.x);
-                    outPositions[i * 3 + 1] = static_cast<float>(realityPosition.y);
-                    outPositions[i * 3 + 2] = static_cast<float>(realityPosition.z);
+                    // Source vertices become ECEF in Double through the validated
+                    // node/model/RTC/tile/up-axis order above. Cesium then reduces
+                    // them to metres near this primitive before the only Float cast.
+                    const glm::dvec3 primitiveLocal = primitiveFrame.ecefPositionToLocal(
+                        ecefPositions[static_cast<size_t>(i)]);
+                    outPositions[i * 3] = static_cast<float>(primitiveLocal.x);
+                    outPositions[i * 3 + 1] = static_cast<float>(primitiveLocal.y);
+                    outPositions[i * 3 + 2] = static_cast<float>(primitiveLocal.z);
                     const glm::dvec2 uv = textureTransformExtension
                         ? textureTransform.applyTransform(uvs[static_cast<size_t>(i)].x, uvs[static_cast<size_t>(i)].y)
                         : uvs[static_cast<size_t>(i)];
@@ -374,6 +416,8 @@ public:
                 }
                 CesiumPrimitivePayload *payload = [CesiumPrimitivePayload new];
                 payload.positions = positionData;
+                payload.ecefFromPrimitiveLocal = simdMatrixFromGlm(
+                    primitiveFrame.getLocalToEcefTransformation());
                 payload.textureCoordinates = uvData;
                 payload.indices = indexData;
                 // Cesium may retain generated mip levels back-to-back in pixelData.
@@ -444,39 +488,6 @@ public:
 
 std::unique_ptr<Cesium3DTilesSelection::Tileset> tileset;
 
-glm::dmat4 londonEcefFromEnu() {
-    const auto london = CesiumGeospatial::Cartographic::fromDegrees(
-        -0.1278,
-        51.5074,
-        staticLondonEllipsoidHeightMeters);
-    const glm::dvec3 position = CesiumGeospatial::Ellipsoid::WGS84.cartographicToCartesian(london);
-    return CesiumGeospatial::GlobeTransforms::eastNorthUpToFixedFrame(position);
-}
-
-glm::dvec3 ecefVectorFromRealityKitLocal(const glm::dmat4& ecefFromEnu, const glm::dvec3& localVector) {
-    // RealityKit local is right-handed x=east, y=up, z=-north. ENU is
-    // x=east, y=north, z=up. w=0 deliberately excludes translation.
-    const glm::dvec3 enuVector(localVector.x, -localVector.z, localVector.y);
-    return glm::dvec3(ecefFromEnu * glm::dvec4(enuVector, 0.0));
-}
-
-Cesium3DTilesSelection::ViewState makeLondonView(
-    const glm::dvec3& localPosition,
-    const glm::dvec3& localDirection,
-    const glm::dvec3& localUp) {
-    const glm::dmat4 ecefFromEnu = londonEcefFromEnu();
-    // Positions use w=1 so the fixed London ECEF origin is applied. All ECEF
-    // calculations remain double precision.
-    const glm::dvec3 enuPosition(localPosition.x, -localPosition.z, localPosition.y);
-    const glm::dvec3 ecefPosition(ecefFromEnu * glm::dvec4(enuPosition, 1.0));
-    const glm::dvec3 ecefDirection = glm::normalize(
-        ecefVectorFromRealityKitLocal(ecefFromEnu, localDirection));
-    glm::dvec3 ecefUp = ecefVectorFromRealityKitLocal(ecefFromEnu, localUp);
-    ecefUp -= glm::dot(ecefUp, ecefDirection) * ecefDirection;
-    ecefUp = glm::normalize(ecefUp);
-    return {ecefPosition, ecefDirection, ecefUp, {1024.0, 1024.0}, 1.57, 1.22};
-}
-
 } // namespace
 
 @implementation CesiumBridge
@@ -542,23 +553,64 @@ Cesium3DTilesSelection::ViewState makeLondonView(
     return @[@(converted.x), @(converted.y)];
 }
 
-+ (NSString *)runLondonLocalFrameSmokeTest {
-    // ECEF is double precision. The local ENU origin must map exactly to zero before
-    // any eventual conversion to RealityKit's metre-scale Float transforms.
-    const auto london = CesiumGeospatial::Cartographic::fromDegrees(-0.1278, 51.5074, 1000.0);
-    const glm::dvec3 origin = CesiumGeospatial::Ellipsoid::WGS84.cartographicToCartesian(london);
-    const glm::dmat4 enuToEcef = CesiumGeospatial::GlobeTransforms::eastNorthUpToFixedFrame(origin);
-    const glm::dvec3 localOrigin = glm::dvec3(glm::inverse(enuToEcef) * glm::dvec4(origin, 1.0));
-    const glm::dvec3 east = glm::normalize(glm::dvec3(enuToEcef[0]));
-    const glm::dvec3 localEast = glm::dvec3(glm::inverse(enuToEcef) * glm::dvec4(origin + east * 100.0, 1.0));
++ (NSString *)runLocalHorizontalFrameSmokeTest {
+    // Preserve the original local-frame smoke test at the accepted launch region,
+    // now using the exact planetary X=east, Y=up, Z=south convention.
+    const auto launch = CesiumGeospatial::Cartographic::fromDegrees(-0.1278, 51.5074, 1000.0);
+    const glm::dvec3 origin =
+        CesiumGeospatial::Ellipsoid::WGS84.cartographicToCartesian(launch);
+    const CesiumGeospatial::LocalHorizontalCoordinateSystem frame =
+        makeRealityKitLocalFrame(origin);
+    const glm::dmat4 ecefFromLocal = frame.getLocalToEcefTransformation();
+    const glm::dvec3 localOrigin = frame.ecefPositionToLocal(origin);
+    const glm::dvec3 localEast = frame.ecefPositionToLocal(
+        origin + glm::normalize(glm::dvec3(ecefFromLocal[0])) * 100.0);
+    const glm::dvec3 localUp = frame.ecefPositionToLocal(
+        origin + glm::normalize(glm::dvec3(ecefFromLocal[1])) * 100.0);
+    const glm::dvec3 localSouth = frame.ecefPositionToLocal(
+        origin + glm::normalize(glm::dvec3(ecefFromLocal[2])) * 100.0);
     const bool isCorrect = glm::length(localOrigin) < 1e-6 &&
-        std::abs(localEast.x - 100.0) < 1e-6 &&
-        std::abs(localEast.y) < 1e-6 &&
-        std::abs(localEast.z) < 1e-6;
-    return isCorrect ? @"London local ENU frame: OK" : @"London local ENU frame: FAILED";
+        glm::length(localEast - glm::dvec3(100.0, 0.0, 0.0)) < 1e-6 &&
+        glm::length(localUp - glm::dvec3(0.0, 100.0, 0.0)) < 1e-6 &&
+        glm::length(localSouth - glm::dvec3(0.0, 0.0, 100.0)) < 1e-6;
+    return isCorrect
+        ? @"RealityKit local horizontal frame: OK"
+        : @"RealityKit local horizontal frame: FAILED";
 }
 
-+ (void)startLondonTilesWithAPIKey:(NSString *)apiKey
++ (simd_double3)ecefPositionWithLongitudeDegrees:(double)longitudeDegrees
+                                  latitudeDegrees:(double)latitudeDegrees
+                           ellipsoidHeightMeters:(double)ellipsoidHeightMeters {
+    const CesiumGeospatial::Cartographic cartographic =
+        CesiumGeospatial::Cartographic::fromDegrees(
+            longitudeDegrees,
+            latitudeDegrees,
+            ellipsoidHeightMeters);
+    return simdVectorFromGlm(
+        CesiumGeospatial::Ellipsoid::WGS84.cartographicToCartesian(cartographic));
+}
+
++ (simd_double3)cartographicDegreesFromEcefPosition:(simd_double3)ecefPosition {
+    const std::optional<CesiumGeospatial::Cartographic> cartographic =
+        CesiumGeospatial::Ellipsoid::WGS84.cartesianToCartographic(
+            glmVectorFromSimd(ecefPosition));
+    if (!cartographic) {
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        return simd_make_double3(nan, nan, nan);
+    }
+    return simd_make_double3(
+        cartographic->longitude * 180.0 / M_PI,
+        cartographic->latitude * 180.0 / M_PI,
+        cartographic->height);
+}
+
++ (simd_double4x4)ecefFromLocalHorizontalAtEcefPosition:(simd_double3)ecefPosition {
+    return simdMatrixFromGlm(
+        makeRealityKitLocalFrame(glmVectorFromSimd(ecefPosition))
+            .getLocalToEcefTransformation());
+}
+
++ (void)startTilesWithAPIKey:(NSString *)apiKey
            maximumScreenSpaceError:(double)maximumScreenSpaceError
                 maximumCachedBytes:(int64_t)maximumCachedBytes
                      onTileVisible:(void (^)(NSString *tileIdentifier, NSArray<CesiumPrimitivePayload *> *primitives))onTileVisible
@@ -599,7 +651,7 @@ Cesium3DTilesSelection::ViewState makeLondonView(
         externals, "https://tile.googleapis.com/v1/3dtiles/root.json", options);
 }
 
-+ (void)updateLondonTilesWithCameraPositionX:(double)positionX
++ (void)updateTilesWithEcefCameraPositionX:(double)positionX
                                    positionY:(double)positionY
                                    positionZ:(double)positionZ
                                   directionX:(double)directionX
@@ -611,13 +663,22 @@ Cesium3DTilesSelection::ViewState makeLondonView(
                                    deltaTime:(double)deltaTime {
     if (!tileset) return;
     tileset->getAsyncSystem().dispatchMainThreadTasks();
-    const glm::dvec3 localDirection(directionX, directionY, directionZ);
-    const glm::dvec3 localUp(upX, upY, upZ);
-    if (glm::length(localDirection) < 1e-9 ||
-        glm::length(localUp) < 1e-9 ||
-        glm::length(glm::cross(localDirection, localUp)) < 1e-9) return;
-    const Cesium3DTilesSelection::ViewState view = makeLondonView(
-        {positionX, positionY, positionZ}, localDirection, localUp);
+    glm::dvec3 ecefDirection(directionX, directionY, directionZ);
+    glm::dvec3 ecefUp(upX, upY, upZ);
+    if (glm::length(ecefDirection) < 1e-9 ||
+        glm::length(ecefUp) < 1e-9 ||
+        glm::length(glm::cross(ecefDirection, ecefUp)) < 1e-9) return;
+    ecefDirection = glm::normalize(ecefDirection);
+    ecefUp -= glm::dot(ecefUp, ecefDirection) * ecefDirection;
+    ecefUp = glm::normalize(ecefUp);
+    const Cesium3DTilesSelection::ViewState view = {
+        {positionX, positionY, positionZ},
+        ecefDirection,
+        ecefUp,
+        {1024.0, 1024.0},
+        1.57,
+        1.22
+    };
     const Cesium3DTilesSelection::ViewUpdateResult& result =
         tileset->updateViewGroup(
             tileset->getDefaultViewGroup(),

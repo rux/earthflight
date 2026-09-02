@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import <simd/simd.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -15,6 +16,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) NSInteger samplerMinFilter;
 @property (nonatomic, readonly) NSInteger samplerMagFilter;
 @property (nonatomic, readonly) BOOL doubleSided;
+@property (nonatomic, readonly) simd_double4x4 ecefFromPrimitiveLocal;
 
 @end
 
@@ -30,15 +32,20 @@ NS_ASSUME_NONNULL_BEGIN
                                                              scaleU:(double)scaleU
                                                              scaleV:(double)scaleV
                                                            rotation:(double)rotation;
-+ (NSString *)runLondonLocalFrameSmokeTest;
-+ (void)startLondonTilesWithAPIKey:(NSString *)apiKey
++ (NSString *)runLocalHorizontalFrameSmokeTest;
++ (simd_double3)ecefPositionWithLongitudeDegrees:(double)longitudeDegrees
+                                  latitudeDegrees:(double)latitudeDegrees
+                           ellipsoidHeightMeters:(double)ellipsoidHeightMeters;
++ (simd_double3)cartographicDegreesFromEcefPosition:(simd_double3)ecefPosition;
++ (simd_double4x4)ecefFromLocalHorizontalAtEcefPosition:(simd_double3)ecefPosition;
++ (void)startTilesWithAPIKey:(NSString *)apiKey
            maximumScreenSpaceError:(double)maximumScreenSpaceError
                 maximumCachedBytes:(int64_t)maximumCachedBytes
                      onTileVisible:(void (^)(NSString *tileIdentifier, NSArray<CesiumPrimitivePayload *> *primitives))onTileVisible
                       onTileHidden:(void (^)(NSString *tileIdentifier))onTileHidden
                         onTileFreed:(void (^)(NSString *tileIdentifier))onTileFreed
               onAttributionChanged:(void (^)(NSString *attribution))onAttributionChanged;
-+ (void)updateLondonTilesWithCameraPositionX:(double)positionX
++ (void)updateTilesWithEcefCameraPositionX:(double)positionX
                                    positionY:(double)positionY
                                    positionZ:(double)positionZ
                                   directionX:(double)directionX

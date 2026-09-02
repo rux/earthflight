@@ -1,20 +1,40 @@
 import RealityKit
 import UIKit
 import Metal
+import simd
 
 @MainActor
 final class GoogleTileRenderer {
     let earthRoot = Entity()
-    private var entitiesByTileIdentifier: [String: [Entity]] = [:]
+    private struct AnchoredEntity {
+        let entity: Entity
+        let ecefFromPrimitiveLocal: simd_double4x4
+    }
+
+    private var entitiesByTileIdentifier: [String: [AnchoredEntity]] = [:]
     private var visibleTileIdentifiers: Set<String> = []
     private var installingTileIdentifiers: Set<String> = []
     private var tileGenerations: [String: Int] = [:]
+    private var renderLocalFromEcef: simd_double4x4
+
+    init(renderLocalFromEcef: simd_double4x4) {
+        self.renderLocalFromEcef = renderLocalFromEcef
+    }
+
+    func setRenderFrame(renderLocalFromEcef: simd_double4x4) {
+        self.renderLocalFromEcef = renderLocalFromEcef
+        for anchoredEntities in entitiesByTileIdentifier.values {
+            for anchoredEntity in anchoredEntities {
+                applyCurrentPlacement(to: anchoredEntity)
+            }
+        }
+    }
 
     func show(primitives: [CesiumPrimitivePayload], for tileIdentifier: String) {
         visibleTileIdentifiers.insert(tileIdentifier)
         if let entities = entitiesByTileIdentifier[tileIdentifier] {
-            for entity in entities {
-                entity.isEnabled = true
+            for anchoredEntity in entities {
+                anchoredEntity.entity.isEnabled = true
             }
             return
         }
@@ -34,8 +54,8 @@ final class GoogleTileRenderer {
         if installingTileIdentifiers.contains(tileIdentifier) {
             tileGenerations[tileIdentifier, default: 0] += 1
         }
-        for entity in entitiesByTileIdentifier[tileIdentifier] ?? [] {
-            entity.isEnabled = false
+        for anchoredEntity in entitiesByTileIdentifier[tileIdentifier] ?? [] {
+            anchoredEntity.entity.isEnabled = false
         }
     }
 
@@ -51,7 +71,7 @@ final class GoogleTileRenderer {
             }
         }
 
-        var entities: [Entity] = []
+        var entities: [AnchoredEntity] = []
         for (_, payload) in primitives.enumerated() {
             if let entity = await makeEntity(
                 from: payload
@@ -65,8 +85,11 @@ final class GoogleTileRenderer {
             return
         }
 
-        for entity in entities {
-            earthRoot.addChild(entity)
+        for anchoredEntity in entities {
+            // Resource generation may span a rebase. Placement deliberately uses
+            // the renderer's latest frame only at main-actor installation time.
+            applyCurrentPlacement(to: anchoredEntity)
+            earthRoot.addChild(anchoredEntity.entity)
         }
         entitiesByTileIdentifier[tileIdentifier] = entities
         tileGenerations.removeValue(forKey: tileIdentifier)
@@ -82,8 +105,8 @@ final class GoogleTileRenderer {
         guard let entities = entitiesByTileIdentifier.removeValue(forKey: tileIdentifier) else {
             return
         }
-        for entity in entities {
-            entity.removeFromParent()
+        for anchoredEntity in entities {
+            anchoredEntity.entity.removeFromParent()
         }
     }
 
@@ -96,7 +119,7 @@ final class GoogleTileRenderer {
 
     private func makeEntity(
         from payload: CesiumPrimitivePayload
-    ) async -> ModelEntity? {
+    ) async -> AnchoredEntity? {
         let positionFloats = floats(from: payload.positions)
         let uvFloats = floats(from: payload.textureCoordinates)
         let indices = uint32s(from: payload.indices)
@@ -136,11 +159,24 @@ final class GoogleTileRenderer {
             material.color = .init(tint: .white, texture: textureParameter)
             // glTF's `doubleSided` controls whether back-face culling is disabled.
             material.faceCulling = payload.doubleSided ? .none : .back
-            return ModelEntity(mesh: mesh, materials: [material])
+            return AnchoredEntity(
+                entity: ModelEntity(mesh: mesh, materials: [material]),
+                ecefFromPrimitiveLocal: payload.ecefFromPrimitiveLocal
+            )
         } catch {
             print("Google RealityKit primitive skipped: \(error)")
             return nil
         }
+    }
+
+    private func applyCurrentPlacement(to anchoredEntity: AnchoredEntity) {
+        // primitive-local -> ECEF -> current render-local, all in Double metres.
+        // This is the only matrix cast used to place the retained RealityKit entity.
+        let renderLocalFromPrimitiveLocal =
+            renderLocalFromEcef * anchoredEntity.ecefFromPrimitiveLocal
+        anchoredEntity.entity.transform = Transform(
+            matrix: FlightState.realityKitMatrix(renderLocalFromPrimitiveLocal)
+        )
     }
 
     // Cesium supplies decoded, tightly-packed RGBA8 pixels. Upload those bytes

@@ -4,7 +4,7 @@ This file records a known-good physical-device Cesium Native build. It intention
 
 ## Current status
 
-The visionOS arm64 Cesium Native build links and runs on the original M2 Apple Vision Pro. Milestone 4 renders a fixed central-London Google Photorealistic 3D Tiles view with correct geometry, textures, sampler behavior, tile replacement, and visible-tile attribution aggregation.
+The visionOS arm64 Cesium Native build links and runs on the original M2 Apple Vision Pro. It starts at a fixed central-London Google Photorealistic 3D Tiles view with correct geometry, textures, sampler behavior, tile replacement, and visible-tile attribution aggregation.
 
 ## Known-good build record
 

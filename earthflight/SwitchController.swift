@@ -65,44 +65,39 @@ final class SwitchController {
             Task { @MainActor in
                 guard let self else { return }
                 self.isLeftTriggerPressed = pressed
-                self.flightState.isDescending =
-                    self.isLeftTriggerPressed || self.isRightTriggerPressed
+                self.updateVerticalInput()
             }
         }
         gamepad.rightTrigger.pressedChangedHandler = { [weak self] _, _, pressed in
             Task { @MainActor in
                 guard let self else { return }
                 self.isRightTriggerPressed = pressed
-                self.flightState.isDescending =
-                    self.isLeftTriggerPressed || self.isRightTriggerPressed
+                self.updateVerticalInput()
             }
         }
         gamepad.leftShoulder.pressedChangedHandler = { [weak self] _, _, pressed in
             Task { @MainActor in
                 guard let self else { return }
                 self.isLeftShoulderPressed = pressed
-                self.flightState.isAscending =
-                    self.isLeftShoulderPressed || self.isRightShoulderPressed
+                self.updateVerticalInput()
             }
         }
         gamepad.rightShoulder.pressedChangedHandler = { [weak self] _, _, pressed in
             Task { @MainActor in
                 guard let self else { return }
                 self.isRightShoulderPressed = pressed
-                self.flightState.isAscending =
-                    self.isLeftShoulderPressed || self.isRightShoulderPressed
+                self.updateVerticalInput()
             }
         }
         gamepad.buttonA.pressedChangedHandler = { [weak self] _, _, pressed in
             Task { @MainActor in self?.flightState.isBoosting = pressed }
         }
-        // GameController face-button names are positional. On a Switch Pro,
-        // physical Y is the left button (buttonX) and physical A is the right
-        // button (buttonB).
+        // GameController face-button names are positional. The physically
+        // accepted Switch Pro roll pair reports through buttonX and buttonY.
         gamepad.buttonX.pressedChangedHandler = { [weak self] _, _, pressed in
             Task { @MainActor in self?.flightState.isRollingLeft = pressed }
         }
-        gamepad.buttonB.pressedChangedHandler = { [weak self] _, _, pressed in
+        gamepad.buttonY.pressedChangedHandler = { [weak self] _, _, pressed in
             Task { @MainActor in self?.flightState.isRollingRight = pressed }
         }
         gamepad.rightThumbstickButton?.pressedChangedHandler = { [weak self] _, _, pressed in
@@ -120,6 +115,15 @@ final class SwitchController {
         }
 
         print("Switch Pro Controller flight controls ready.")
+    }
+
+    @MainActor
+    private func updateVerticalInput() {
+        flightState.isAscending = isLeftShoulderPressed || isRightShoulderPressed
+        flightState.isDescending = isLeftTriggerPressed || isRightTriggerPressed
+        flightState.isVerticalBoosting =
+            (isLeftShoulderPressed && isRightShoulderPressed) ||
+            (isLeftTriggerPressed && isRightTriggerPressed)
     }
 
     private static func deadZone(_ value: Float) -> Float {

@@ -56,6 +56,7 @@ final class FlightState {
     var isRollingLeft = false
     var isRollingRight = false
     var isBoosting = false
+    var isVerticalBoosting = false
 
     private var strongestActiveLeftStick = SIMD2<Float>(repeating: 0)
     private var wasLeftStickActive = false
@@ -256,7 +257,9 @@ final class FlightState {
                 EarthflightTuning.highAltitudeExcessSquaredSpeedFactor *
                 highAltitudeExcess * highAltitudeExcess
         )
-        let verticalBoost = isBoosting ? EarthflightTuning.boostMultiplier : 1
+        let verticalBoost = isBoosting || isVerticalBoosting
+            ? EarthflightTuning.boostMultiplier
+            : 1
         let geodeticVerticalMovement = SIMD3<Double>(
             0,
             Double(verticalInput) * verticalSpeed * verticalBoost * Double(dt),

@@ -346,31 +346,35 @@ The controller is expected to be connected before launch. No controller picker, 
 
 Use GameController’s extended gamepad profile and ensure the RealityKit/SwiftUI view receives raw controller events rather than allowing visionOS to reinterpret gamepad input as gaze-and-pinch UI interaction.
 
-Apple’s face-button property names are positional rather than promises about the glyph printed on a Nintendo controller. The first controller milestone must empirically map every physical control on the real Vision Pro before flight controls are finalised.
+Apple’s face-button property names are positional rather than promises about the glyph printed on a Nintendo controller. The mapping below records the callbacks physically accepted with the Switch Pro Controller on the original M2 Vision Pro.
 
-Target physical controls:
+Accepted control mapping:
 
-| Physical Switch Pro control | Behaviour                      |
+| Controller input            | Behaviour                      |
 | --------------------------- | ------------------------------ |
 | Left stick up/down          | Forward/backward translation   |
 | Left stick left/right       | Strafe left/right              |
 | Right stick left/right      | Yaw                            |
 | Right stick up/down         | Pitch, aircraft-style inverted |
-| ZR                          | Ascend                         |
-| ZL                          | Descend                        |
-| R                           | Roll right                     |
-| L                           | Roll left                      |
-| Physical bottom face button | Speed boost                    |
+| L or R shoulder button      | Ascend                         |
+| L + R shoulder buttons      | Ascend with vertical boost     |
+| ZL or ZR trigger            | Descend                        |
+| ZL + ZR triggers            | Descend with vertical boost    |
+| GameController `buttonX`    | Roll left                      |
+| GameController `buttonY`    | Roll right                     |
+| Physical bottom face button (`buttonA`) | General speed boost |
 | `+`                         | Open voice Jump To             |
 | Right-stick click           | Reset yaw, pitch and roll      |
 
 “Inverted pitch” means pushing the right stick physically forwards/up pitches the craft nose down; pulling it backwards/down pitches the nose up.
 
-Treat ZL and ZR as digital buttons. No analogue-trigger model is needed.
+Treat the shoulder buttons and ZL/ZR triggers as digital buttons. Pressing either
+member of a vertical pair gives normal vertical movement; pressing both members
+of the same pair applies the boost multiplier to vertical movement.
 
 Use a small dead zone. Begin with linear input. Do not create configurable curves or a settings screen.
 
-Other face buttons, D-pad, `-`, Home and Capture can remain unused.
+Other unused face-button callbacks, D-pad, `-`, Home and Capture can remain unused.
 
 ## Head tracking and craft control
 
@@ -418,7 +422,7 @@ Speed should scale with altitude so that:
 * high-altitude movement can cross countries;
 * the boost button multiplies the current speed.
 
-Do not add inertia, lift, drag, gravity, collision detection, terrain avoidance, stalls or aircraft simulation during the initial implementation.
+Do not add physics-style inertia, lift, drag, gravity, collision detection, terrain avoidance, stalls or aircraft simulation. The only accepted release motion is the narrow linear left-stick and vertical release decay recorded in the Milestone 8 completion notes.
 
 Roll is visual and directional freedom, not an aerodynamic model.
 
@@ -659,7 +663,7 @@ Treat these as accepted implementation contracts. Do not redesign them during Mi
 * Store heading, pitch and roll as independent control state and rebuild the craft orientation basis explicitly. With roll equal to zero, yaw and pitch, including simultaneous diagonal right-stick input, must leave the horizon level. Do not restore incremental `yaw * orientation * pitch` quaternion accumulation.
 * Right-stick click is a hard orientation reset. It restores the launch heading, pitch and roll while preserving geographic position and movement input state; it is not merely a roll-level command.
 * The accepted background is a generated inward-facing unlit sky dome: deep blue at the zenith, softer blue through the middle and pale warm blue at the horizon. It shares the Earth-root attitude transform and remains centred on the virtual craft.
-* Keep all owner-editable flight feel constants in `EarthflightTuning.swift`. The accepted pre-Milestone-8 baseline uses a `6` horizontal speed multiplier and a two-stage vertical curve: the low-altitude curve is capped at 100 m/s, a second squared term begins above 250 m, and absolute vertical speed is capped at 3,000 m/s. Do not tune feel again before Milestone 8 without a measured blocker or an explicit owner request.
+* Keep all owner-editable flight feel constants in `EarthflightTuning.swift`. The accepted curve uses a `6` horizontal speed multiplier and a two-stage vertical curve: the low-altitude curve is capped at 100 m/s, a second squared term begins above 250 m, and absolute vertical speed is capped at 3,000 m/s. Milestone 8 completion notes record the complete accepted tuning set.
 * Preserve the focused transform regression test that verifies `localEarthFromCraftDelta` maps the initial craft pivot to the current craft position and that its inverse maps back. This protects the relationship between rendered RealityKit motion and the Cesium selection pose.
 
 ### Milestone 6 — Planetary coordinates
@@ -698,19 +702,28 @@ Established on the original M2 Vision Pro:
 * The physical Switch Pro `+` button is `GCExtendedGamepad.buttonMenu`; only its press-down transition starts one Jump To operation.
 * Jump To pauses only `FlightState.advance`; head tracking, current Cesium selection, tile lifecycle, sky, and attribution continue. A fully resolved destination crosses to the existing scene update as one pending value, where `FlightState.jump` and `googleRenderer.setRenderFrame` happen before the next Cesium view update.
 * MapKit receives the exact trimmed transcript without a region and `response.mapItems.first` wins. One Google Elevation request supplies mean-sea-level ground height; bundled Cesium `WW15MGH.DAC` EGM96 supplies `N`; use `groundEllipsoidHeight = H + N`, then add the fixed 1,000 m clearance.
-* The jump preserves heading, pitch, roll, and active controller inputs. It centres a fresh render frame at the new ECEF craft position and sets the speed-reference ground datum, so every destination begins at a 1,000 m speed reference. It does not recreate the tileset or renderer resources.
+* The jump resets heading, pitch, and roll through the same complete orientation-reset path as a right-stick click, while preserving position at the resolved destination and active controller inputs. It centres a fresh render frame at the new ECEF craft position and sets the speed-reference ground datum, so every destination begins at a 1,000 m speed reference. It does not recreate the tileset or renderer resources.
 * The preferred `SpeechAnalyzer` capture path has a concrete visionOS blocker: `AVCaptureDevice.default(for: .audio)` returned no device on hardware, and `AVCaptureDevice.DeviceType.microphone` is unavailable to visionOS. Use the single legacy `SFSpeechRecognizer` plus `AVAudioEngine` fallback, with `AVAudioNode.installAudioTap` and a copied mutable PCM buffer. Do not reintroduce both recognition paths in parallel.
 * A SwiftUI `.overlay` outside a full immersive `RealityView` did not present the temporary status card on hardware. Keep Jump To status as a persistent RealityView `Attachment`, billboarded directly in front of the wearer and transparent while idle; do not replace it with an outer window overlay.
 * Speech Jump To was physically exercised successfully for San Francisco, Tokyo, and Mexico City. The overlay shows the active prompt and partial transcript.
 
-### Milestone 8 — Feel
+### Milestone 8 — Final feel, LOD transitions and cleanup
 
-* Tune dead zones.
-* Tune pitch/yaw/roll rates.
-* Tune altitude-speed curve.
-* Tune boost.
-* Remove leftover diagnostics.
-* Preserve the minimal application.
+**Status: completed and physically accepted by the owner on the original M2 Vision Pro on 4 September 2026.**
+
+### Milestone 8 completion notes
+
+* Owner-editable values are centralised in `EarthflightTuning.swift`. The accepted controller and flight values are: dead zone `0.12`; yaw `1.2` rad/s; pitch `1.0` rad/s; roll `0.45` rad/s; maximum pitch `80` degrees; horizontal curve `max(3, referenceHeight * 0.3) * 6`; boost multiplier `4`; vertical curve minimum `1` m/s, low-altitude squared factor `1`, low-altitude cap `100` m/s, high-altitude threshold `250` m, high-altitude excess-squared factor `0.0015`, and absolute cap `3,000` m/s.
+* Left-stick translation and vertical movement have a linear `0.5` second release decay. Active input remains immediate. Setting the duration to zero disables the effect and bypasses its state and calculations. Any new deliberate input cancels the existing decay. Per-axis release state preserves the strongest deliberate sample so the Switch Pro stick's opposite-direction recenter rebound cannot reverse a same-direction release tail.
+* The accepted controller remap is: `buttonX` rolls left; `buttonY` rolls right; either L or R ascends; either ZL or ZR descends; holding both ascent buttons or both descent buttons applies the normal `4` times boost to vertical movement. The physical bottom face button remains the general boost control. Right-stick click remains the complete orientation reset.
+* A completed Jump To now performs that same complete orientation reset. It preserves the resolved destination position and active controller input, while clearing any residual movement-release tail.
+* Cesium LOD selection uses maximum screen-space error `24`, maximum simultaneous tile loads `8`, and LOD transitions enabled with a `0.3` second transition length. No custom distance LOD, fog-density tuning, tile excluder, fade shader, or second selection system was added.
+* The Cesium transient in-memory tile cache is `1 GiB` (`1,024 * 1,024 * 1,024` bytes). It is not a persistent disk cache. The larger bound may reduce reloads after looking away and back, at the cost of additional memory pressure.
+* RealityKit's transparent `OpacityComponent` crossfade was rejected because overlapping photogrammetry exposed the sky and geometry behind tall structures. The accepted transition is an opaque, readiness-gated handoff: Cesium transition progress pauses while any selected replacement is still awaiting guarded RealityKit installation; the replacement reports ready only after its tile container is attached to `earthRoot`; outgoing tiles remain enabled and fully opaque until Cesium says the transition has completed, and only then use the existing hide path. This contract applies in both refinement and unrefinement directions.
+* Tile containers remain identity children of `earthRoot`, while primitive transforms retain their independent ECEF/render-local anchors. Generation-token checks prevent freed or hidden tiles from reappearing after asynchronous preparation, and installation uses the latest render frame so rebases and Jump To remain coherent.
+* Milestone 6/7 planetary telemetry, its attachment and periodic console summary were removed. Sanitised failure diagnostics and the Jump To attachment remain.
+* Google attribution remains a persistent screen-space overlay and is shifted left with a `220` point trailing inset.
+* The procedural inward-facing unlit sky remains deliberately simple. Its radius is `600,000` metres; the accepted upper blue gradient remains, while the lower hemisphere now fades to a light dull sandy brown so a brief terrain gap is less stark than the former uninterrupted horizon blue.
 
 Do not start a later milestone merely because the current change makes it convenient.
 

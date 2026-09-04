@@ -246,7 +246,7 @@ toolchain to a release toolchain:
 5. repeat the current milestone's physical-headset smoke test before beginning the next milestone;
 6. update the recorded known-good Xcode, SDK, compiler and native-build details.
 
-Do not add compatibility layers for old beta toolchains. Support the currently installed authoritative toolafchain.
+Do not add compatibility layers for old beta toolchains. Support the currently installed authoritative toolchain.
 
 ### Apple frameworks
 

@@ -62,8 +62,9 @@ enum EarthflightTuning {
     static let maximumScreenSpaceError: Double = 24
     static let maximumSimultaneousTileLoads: UInt32 = 8
 
-    // Cesium's in-memory cache only. Raising this may reduce reloads after turning
-    // back, but also increases memory pressure on the original M2 Vision Pro. 512 was original value
+    // Cesium's transient in-memory cache only, not persistent storage. 1 GiB
+    // trades additional memory pressure on the original M2 Vision Pro for fewer
+    // reloads after looking away from a tile and back.
     static let maximumCachedBytes: Int64 = 1024 * 1024 * 1024
     static let lodTransitionsEnabled = true
     static let lodTransitionLengthSeconds: Float = 0.3

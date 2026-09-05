@@ -21,9 +21,28 @@ final class FlightState {
     static let launchBaseEllipsoidHeightMeters = 120.0
     static let launchCraftEllipsoidHeightMeters = 121.5
 
-    // A 10 km tangent step keeps the simple projected horizontal integration
-    // well conditioned even when altitude-scaled boost produces a large frame step.
-    private static let maximumSpatialIntegrationStepMeters = 10_000.0
+    // A tangent step keeps the simple projected horizontal integration well
+    // conditioned. What has to stay small is the angle the step subtends at the
+    // Earth's centre, not its length, so the limit scales with the craft's
+    // geocentric radius: 10 km at the surface, and the same 1.6 milliradians from
+    // any altitude. A flat 10 km made the step count grow with altitude without
+    // bound, and horizontal speed grows with altitude too, so the two multiplied.
+    // Nose down on full reverse stick turns that horizontal speed into climb and
+    // the height feeds its own growth; ten seconds of it reached 899,106 Cesium
+    // conversions in a single frame, which buried the frame rate and took the
+    // controls, the tile updates and the sky's own update with it.
+    nonisolated private static let maximumSpatialIntegrationAngleRadians = 10_000.0 / 6_371_000.0
+
+    /// Steps the horizontal integration takes for one frame's tangent movement.
+    /// Scaling with radius is what holds this flat instead of letting it grow
+    /// with altitude; the invariant is worth a test of its own.
+    nonisolated static func integrationStepCount(
+        horizontalDistanceMeters: Double,
+        geocentricRadiusMeters: Double
+    ) -> Int {
+        let stepLimit = maximumSpatialIntegrationAngleRadians * geocentricRadiusMeters
+        return max(1, Int(ceil(horizontalDistanceMeters / stepLimit)))
+    }
 
     // The single persistent global position: WGS84 Earth-centred, Earth-fixed
     // Cartesian metres in Double. Cartographic values below are derived snapshots.
@@ -351,9 +370,9 @@ final class FlightState {
         let horizontalDistance = simd_length(
             SIMD2<Double>(localDisplacement.x, localDisplacement.z)
         )
-        let stepCount = max(
-            1,
-            Int(ceil(horizontalDistance / Self.maximumSpatialIntegrationStepMeters))
+        let stepCount = Self.integrationStepCount(
+            horizontalDistanceMeters: horizontalDistance,
+            geocentricRadiusMeters: simd_length(craftEcefPosition)
         )
         let step = localDisplacement / Double(stepCount)
 
@@ -379,10 +398,15 @@ final class FlightState {
             // position is reconstructed at only the explicitly intended height.
             // This removes tangent-chord altitude gain while retaining pitch-induced
             // local-up motion and independent ZL/ZR geodetic vertical motion.
+            // The ceiling is the one place flight height is bounded; see the
+            // tuning constant for why the world stops being drawable above it.
             craftEcefPosition = Self.ecefPosition(
                 longitudeDegrees: candidateCartographic.x,
                 latitudeDegrees: candidateCartographic.y,
-                ellipsoidHeightMeters: ellipsoidHeightMeters + step.y
+                ellipsoidHeightMeters: min(
+                    ellipsoidHeightMeters + step.y,
+                    EarthflightTuning.maximumEllipsoidHeightMeters
+                )
             )
             updateCartographic()
         }

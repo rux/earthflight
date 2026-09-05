@@ -426,6 +426,19 @@ Do not add physics-style inertia, lift, drag, gravity, collision detection, terr
 
 Roll is visual and directional freedom, not an aerodynamic model.
 
+### The flight ceiling, and why speed scaling needed one
+
+**Status: found and fixed on 5 September 2026, reported from the headset.**
+
+Speed scales with altitude, and that is deliberate. The consequence is not: pitch the nose over and hold the left stick and the *horizontal* speed becomes climb rate, so height feeds its own growth. At the 80 degree pitch limit `dh/dt = 1.77 * h`, or `7.09 * h` with boost, which multiplies e-fold every 0.56 seconds. `maximumVerticalSpeedMetersPerSecond` does not bound this at all, because it only caps the ZL/ZR input. Do not mistake it for a ceiling.
+
+The reported symptom was flying backwards while looking down, then losing the controls while the sandy sky fill stayed frozen at a size larger than the shrinking Earth. Two failures compounded:
+
+* **The integration step count grew without bound.** `integrate` split each frame's tangent movement into steps of a flat 10 km, but the movement itself grows with altitude, so the two multiplied. Ten seconds of pitched climb reached fifty million kilometres and **899,106 Cesium conversions in one frame**. That is what took the frame rate, and with it the controls, the tile updates and the sky's own update, which is why the sandy disc froze at the last height it had been built for while the world kept receding. The step limit is now angular, `10 km / 6,371 km` of arc scaled by the craft's geocentric radius: identical at the surface, and flat at about 115 steps per frame at any altitude, 460 for a boosted stick on the slowest frame `advance` will accept. `FlightState.integrationStepCount` exists so a test can pin that.
+* **Nothing bounded the height.** RealityKit render-local positions are Float. One unit in the last place is 47 metres at the ceiling, but 6 km at ten times it and 206 km at 1.7 billion km, where the globe comes apart. `EarthflightTuning.maximumEllipsoidHeightMeters` is the Moon's mean distance, 384,400 km, clamped in `integrate`, the single place flight changes height. The Earth is already under two degrees wide there, and the same pitched trick brings the craft back down in under two seconds, so the ceiling is not a trap.
+
+Capping horizontal speed would also have stopped the runaway, and was rejected: it would change the accepted feel at every altitude to fix a problem that only exists at the top.
+
 ## Earth coordinate model
 
 Keep planetary coordinates in double precision outside RealityKit.

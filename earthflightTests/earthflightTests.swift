@@ -520,6 +520,63 @@ struct EarthflightTests {
         #expect(SkyDome.radiusMeters(ellipsoidHeightMeters: farHeight) > farHorizonDistance)
     }
 
+    @Test("A pitched-over full stick climbs fast but cannot fly out of the world")
+    @MainActor
+    func pitchedClimbStaysBounded() {
+        // Nose down on full reverse stick is the reported input. The backward
+        // axis then has a sine-of-eighty-degrees component along local up, so the
+        // altitude-scaled horizontal speed becomes climb rate and height feeds its
+        // own growth: it multiplies e-fold every 0.56 seconds, or every 0.14 with
+        // boost. Ten seconds of it used to reach fifty million kilometres.
+        let flightState = FlightState()
+        flightState.rightStick = [0, 1]
+        for _ in 0..<120 {
+            flightState.advance(deltaTime: 1.0 / 60)
+        }
+        flightState.rightStick = .zero
+        flightState.leftStick = [0, -1]
+        flightState.isBoosting = true
+        for _ in 0..<(60 * 30) {
+            flightState.advance(deltaTime: 1.0 / 60)
+        }
+
+        #expect(flightState.ellipsoidHeightMeters.isFinite)
+        #expect(flightState.longitudeDegrees.isFinite)
+        #expect(flightState.latitudeDegrees.isFinite)
+        #expect(flightState.craftEcefPosition.x.isFinite)
+        // It really did climb, and it really did stop.
+        #expect(flightState.ellipsoidHeightMeters > 100_000_000)
+        #expect(
+            flightState.ellipsoidHeightMeters <=
+                EarthflightTuning.maximumEllipsoidHeightMeters + 1
+        )
+
+        // The step count is what buried the frame rate, and it is the invariant
+        // worth pinning: a flat tangent limit let it grow with altitude, so it
+        // reached 899,106 in one frame. Scaling the limit with the craft's radius
+        // holds it flat at every altitude, even for a boosted stick on the
+        // slowest frame `advance` will accept.
+        for height in [
+            0.0,
+            1_000,
+            1_000_000,
+            100_000_000,
+            EarthflightTuning.maximumEllipsoidHeightMeters
+        ] {
+            let horizontalSpeed = (
+                EarthflightTuning.minimumHorizontalSpeedMetersPerSecond +
+                    EarthflightTuning.horizontalHeightSpeedFactor * height
+            ) * Double(EarthflightTuning.horizontalSpeedMultiplier) *
+                EarthflightTuning.boostMultiplier
+            let steps = FlightState.integrationStepCount(
+                horizontalDistanceMeters: horizontalSpeed * 0.1,
+                geocentricRadiusMeters: 6_371_000 + height
+            )
+            #expect(steps >= 1)
+            #expect(steps < 500)
+        }
+    }
+
     @Test("The sky palette is smooth and the texture dithers away its 8-bit steps")
     func skyPaletteSmoothnessAndDither() {
         // The cubic must join the tuned stops without inventing colours between

@@ -44,6 +44,18 @@ nonisolated enum EarthflightTuning {
     static let highAltitudeExcessSquaredSpeedFactor: Double = 0.0015
     static let maximumVerticalSpeedMetersPerSecond: Double = 3_000
 
+    // The one flight ceiling. It exists because RealityKit's render-local
+    // positions are Float: one unit in the last place is 47 metres out here, and
+    // by ten times this height it is 6 km, at which point the globe itself comes
+    // apart. Nothing above is worth reaching either, since the Earth is already
+    // under two degrees wide. Note that the vertical speed cap above is not a
+    // real ceiling: pitching over and using the left stick moves the craft up at
+    // the altitude-scaled horizontal speed instead, which climbs exponentially
+    // and crosses this in about seven seconds. Coming back down the same way
+    // takes under two seconds, so the ceiling is not a trap.
+    // The Moon's mean distance is simply a memorable number in the right place.
+    static let maximumEllipsoidHeightMeters: Double = 384_400_000
+
     // MARK: - Jump To
 
     /// A Jump To places the craft at this fixed clearance above converted ground.

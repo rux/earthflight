@@ -73,3 +73,22 @@ export VCPKG_DEFAULT_BINARY_CACHE="$earthflight_root/build/vcpkg-binary-cache"
 
 "$cmake_command" --build "$cesium_build" --parallel
 "$cmake_command" --install "$cesium_build"
+
+# s2geometry (a Cesium dependency, via CesiumGeospatial) links about ninety
+# separate libabsl_*.a archives with a dense internal dependency graph. Apple's
+# linker resolves a static archive in one left-to-right pass, so listing that
+# many archives by hand in Xcode's link order is fragile: whichever archive
+# happens to need a symbol from a later one fails unless the order already
+# accounts for it. Concatenating every installed abseil archive into one
+# archive removes the ordering problem entirely, because the linker's normal
+# multi-pass symbol resolution within a single archive already handles this.
+# Xcode's project only ever links "-lEarthflightAbseil"; this is the one place
+# that archive is produced, deterministically, from the pinned vcpkg abseil
+# port, rather than depending on a hand-built copy in the ignored build tree.
+vcpkg_install_lib="$cesium_build/vcpkg_installed/arm64-visionos/lib"
+absl_archives=("$vcpkg_install_lib"/libabsl_*.a(N))
+if (( ${#absl_archives[@]} == 0 )); then
+    print -u2 "No libabsl_*.a archives found under $vcpkg_install_lib; abseil was not installed by vcpkg."
+    exit 1
+fi
+xcrun libtool -static -o "$vcpkg_install_lib/libEarthflightAbseil.a" "${absl_archives[@]}"

@@ -182,7 +182,11 @@ final class GoogleTileRenderer {
 
             let mesh = try MeshResource.generate(from: [descriptor])
             var material = UnlitMaterial()
-            let texture = try await makeTexture(from: payload)
+            let texture = try await Self.makeTexture(
+                rgba8: payload.rgbaImage,
+                width: payload.imageWidth,
+                height: payload.imageHeight
+            )
             let textureParameter = MaterialParameters.Texture(
                 texture,
                 sampler: makeSampler(from: payload)
@@ -210,15 +214,17 @@ final class GoogleTileRenderer {
         )
     }
 
-    // Cesium supplies decoded, tightly-packed RGBA8 pixels. Upload those bytes
-    // directly rather than passing through Core Graphics, whose bitmap layout is
-    // unnecessary here and obscures the source pixel-format contract.
-    private func makeTexture(
-        from payload: CesiumPrimitivePayload
+    // Cesium supplies decoded, tightly-packed RGBA8 pixels. Keep this constructor
+    // internal so the regression test exercises the same CGImage-backed upload
+    // used by streaming tiles rather than a test-only approximation.
+    static func makeTexture(
+        rgba8: Data,
+        width: Int,
+        height: Int
     ) async throws -> TextureResource {
-        guard payload.imageWidth > 0,
-              payload.imageHeight > 0,
-              payload.rgbaImage.count == payload.imageWidth * payload.imageHeight * 4 else {
+        guard width > 0,
+              height > 0,
+              rgba8.count == width * height * 4 else {
             throw GoogleTileRendererError.invalidImage
         }
 
@@ -227,14 +233,14 @@ final class GoogleTileRenderer {
         // use on the M2 Vision Pro, even after a completed GPU copy proved its
         // pixels readable. The CGImage initializer presents correctly from its
         // first frame and also produced more natural colour on the same route.
-        guard let provider = CGDataProvider(data: payload.rgbaImage as CFData),
+        guard let provider = CGDataProvider(data: rgba8 as CFData),
               let colourSpace = CGColorSpace(name: CGColorSpace.displayP3),
               let image = CGImage(
-                width: payload.imageWidth,
-                height: payload.imageHeight,
+                width: width,
+                height: height,
                 bitsPerComponent: 8,
                 bitsPerPixel: 32,
-                bytesPerRow: payload.imageWidth * 4,
+                bytesPerRow: width * 4,
                 space: colourSpace,
                 bitmapInfo: [
                     .byteOrder32Big,

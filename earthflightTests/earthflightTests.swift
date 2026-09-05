@@ -1,4 +1,6 @@
 import Foundation
+import Metal
+import RealityKit
 import simd
 import Testing
 @testable import earthflight
@@ -319,6 +321,46 @@ struct EarthflightTests {
         pitchedFlight.leftStick = [0, 1]
         pitchedFlight.advance(deltaTime: 0.1)
         #expect(pitchedFlight.ellipsoidHeightMeters > pitchedStartHeight)
+    }
+
+    @Test("Tile textures use the first-frame-safe CGImage upload without changing RGBA rows")
+    @MainActor
+    func tileTextureUploadContract() async throws {
+        // Distinct corners catch channel swaps and vertical or horizontal flips.
+        let rgba8 = Data([
+            255, 0, 0, 255,      0, 255, 0, 255,
+            0, 0, 255, 255,      255, 255, 255, 255
+        ])
+        let resource = try await GoogleTileRenderer.makeTexture(
+            rgba8: rgba8,
+            width: 2,
+            height: 2
+        )
+
+        #expect(resource.width == 2)
+        #expect(resource.height == 2)
+
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba8Unorm,
+            width: 2,
+            height: 2,
+            mipmapped: false
+        )
+        descriptor.usage = .shaderWrite
+        let copiedTexture = try #require(device.makeTexture(descriptor: descriptor))
+        try await resource.copy(to: copiedTexture)
+
+        var copiedRGBA8 = [UInt8](repeating: 0, count: rgba8.count)
+        copiedRGBA8.withUnsafeMutableBytes { bytes in
+            copiedTexture.getBytes(
+                bytes.baseAddress!,
+                bytesPerRow: 8,
+                from: MTLRegionMake2D(0, 0, 2, 2),
+                mipmapLevel: 0
+            )
+        }
+        #expect(copiedRGBA8 == Array(rgba8))
     }
 
     @Test("glTF texture transforms are applied before RealityKit's V conversion")

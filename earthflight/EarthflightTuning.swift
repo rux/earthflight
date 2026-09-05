@@ -82,5 +82,5 @@ enum EarthflightTuning {
     // MARK: - Presentation
 
     static let attributionTrailingInsetPoints: Double = 220
-    static let skyDomeRadiusMeters: Float = 600_000
+    static let skyDomeRadiusMeters: Float = 9_000_000
 }

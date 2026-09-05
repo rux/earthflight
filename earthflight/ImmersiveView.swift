@@ -2,7 +2,6 @@ import SwiftUI
 import RealityKit
 import GameController
 import simd
-import UIKit
 
 struct ImmersiveView: View {
     @State private var flightState = FlightState()
@@ -17,9 +16,14 @@ struct ImmersiveView: View {
             let googleRenderer = GoogleTileRenderer(
                 renderLocalFromEcef: state.renderLocalFromEcef
             )
-            let skyDome = await Self.makeSkyDome()
-            skyDome.position = state.position
-            googleRenderer.earthRoot.addChild(skyDome)
+            let sky = await SkyDome(ellipsoidHeightMeters: state.ellipsoidHeightMeters)
+            sky.update(
+                renderLocalPosition: state.position,
+                renderLocalFromEcef: state.renderLocalFromEcef,
+                ellipsoidHeightMeters: state.ellipsoidHeightMeters,
+                deltaTime: 0
+            )
+            googleRenderer.earthRoot.addChild(sky.entity)
             content.add(googleRenderer.earthRoot)
             if let jumpOverlayEntity = attachments.entity(for: "JumpToOverlay") {
                 // This attachment is a real immersive entity rather than a window overlay,
@@ -83,9 +87,12 @@ struct ImmersiveView: View {
                         )
                     }
                 }
-                // The dome shares the Earth-root rotation but stays centred on the
-                // virtual craft in the current render frame.
-                skyDome.position = state.position
+                sky.update(
+                    renderLocalPosition: state.position,
+                    renderLocalFromEcef: state.renderLocalFromEcef,
+                    ellipsoidHeightMeters: state.ellipsoidHeightMeters,
+                    deltaTime: event.deltaTime
+                )
 
                 // render-local -> world = fixed world-from-launch-craft followed by
                 // inverse(current render-local-from-craft). Double is retained until
@@ -167,44 +174,5 @@ struct ImmersiveView: View {
             controller.start()
             await headTracking.start()
         }
-    }
-
-    private static func makeSkyDome() async -> ModelEntity {
-        let rendererFormat = UIGraphicsImageRendererFormat()
-        rendererFormat.opaque = true
-        rendererFormat.scale = 1
-        let renderer = UIGraphicsImageRenderer(
-            size: CGSize(width: 32, height: 512),
-            format: rendererFormat
-        )
-        let image = renderer.image { context in
-            let zenith = UIColor(red: 0.06, green: 0.32, blue: 0.68, alpha: 1).cgColor
-            let softSky = UIColor(red: 0.32, green: 0.64, blue: 0.88, alpha: 1).cgColor
-            let warmHorizon = UIColor(red: 0.74, green: 0.84, blue: 0.91, alpha: 1).cgColor
-            let sandyGround = UIColor(red: 0.62, green: 0.56, blue: 0.46, alpha: 1).cgColor
-            let gradient = CGGradient(
-                colorsSpace: CGColorSpaceCreateDeviceRGB(),
-                colors: [zenith, softSky, warmHorizon, sandyGround] as CFArray,
-                locations: [0, 0.28, 0.5, 1]
-            )!
-            context.cgContext.drawLinearGradient(
-                gradient,
-                start: .zero,
-                end: CGPoint(x: 0, y: 512),
-                options: []
-            )
-        }
-        let texture = try! await TextureResource(
-            image: image.cgImage!,
-            withName: "EarthflightSkyGradient",
-            options: TextureResource.CreateOptions(semantic: .color)
-        )
-        var material = UnlitMaterial(texture: texture)
-        material.faceCulling = .front
-
-        return ModelEntity(
-            mesh: .generateSphere(radius: EarthflightTuning.skyDomeRadiusMeters),
-            materials: [material]
-        )
     }
 }

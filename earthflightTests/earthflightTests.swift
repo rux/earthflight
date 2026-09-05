@@ -469,6 +469,157 @@ struct EarthflightTests {
         ) < 1e-8)
     }
 
+    @Test("The sky gradient follows air mass from sea level to a distant horizon")
+    func skyAirMassAndHorizon() {
+        // Straight up from sea level is one vertical column by definition, and it
+        // reaches space rather than the ground. The march agrees with the closed
+        // form for a horizontal ray, sqrt(pi R H / 2), to well under a percent.
+        let groundZenith = SkyAtmosphere.ray(heightMeters: 0, zenithAngleRadians: 0)
+        #expect(abs(groundZenith.relativeAirMass - 1) < 0.01)
+        #expect(!groundZenith.reachesGround)
+        let groundHorizon = SkyAtmosphere.ray(heightMeters: 0, zenithAngleRadians: .pi / 2)
+        let closedFormHorizon = (
+            .pi * SkyAtmosphere.earthRadiusMeters * SkyAtmosphere.densityScaleHeightMeters / 2
+        ).squareRoot() / SkyAtmosphere.densityScaleHeightMeters
+        #expect(abs(groundHorizon.relativeAirMass - closedFormHorizon) < 0.2)
+
+        // Sea-level zenith and horizon still produce the accepted blue and pale band.
+        let acceptedZenith = SkyGradient.colour(heightMeters: 0, zenithAngleRadians: 0)
+        #expect(simd_length(acceptedZenith - SIMD3<Double>(0.06, 0.32, 0.68)) < 0.01)
+        let acceptedHorizon = SkyGradient.colour(heightMeters: 0, zenithAngleRadians: .pi / 2)
+        #expect(simd_length(acceptedHorizon - SIMD3<Double>(0.74, 0.84, 0.91)) < 0.1)
+
+        // Past the Karman line there is nothing overhead left to scatter, so the
+        // sky above is black rather than the light blue it is at ground level.
+        let karman = SkyGradient.colour(heightMeters: 100_000, zenithAngleRadians: 0)
+        #expect(karman.z < 0.02)
+
+        // Far enough out to see the whole globe the gradient is still horizon
+        // aware: the Earth starts exactly where geometry puts its limb, a bright
+        // rim survives at that angle, and the sky a few degrees above it is black.
+        let farHeight = 20_000_000.0
+        let limb = Double.pi - asin(
+            SkyAtmosphere.earthRadiusMeters /
+                (SkyAtmosphere.earthRadiusMeters + farHeight)
+        )
+        #expect(!SkyAtmosphere.ray(heightMeters: farHeight, zenithAngleRadians: limb - 0.0002).reachesGround)
+        #expect(SkyAtmosphere.ray(heightMeters: farHeight, zenithAngleRadians: limb + 0.0002).reachesGround)
+        #expect(SkyGradient.colour(heightMeters: farHeight, zenithAngleRadians: limb - 0.0002).z > 0.5)
+        #expect(SkyGradient.colour(heightMeters: farHeight, zenithAngleRadians: limb - 0.01).z < 0.05)
+
+        // The dome keeps the accepted radius while low, then clears the whole
+        // visible Earth once the globe would otherwise be hidden behind it.
+        #expect(
+            SkyDome.radiusMeters(ellipsoidHeightMeters: 1_000) ==
+                Double(EarthflightTuning.skyDomeRadiusMeters)
+        )
+        let farHorizonDistance = (
+            pow(SkyAtmosphere.earthRadiusMeters + farHeight, 2) -
+                pow(SkyAtmosphere.earthRadiusMeters, 2)
+        ).squareRoot()
+        #expect(SkyDome.radiusMeters(ellipsoidHeightMeters: farHeight) > farHorizonDistance)
+    }
+
+    @Test("The sky palette is smooth and the texture dithers away its 8-bit steps")
+    func skyPaletteSmoothnessAndDither() {
+        // The cubic must join the tuned stops without inventing colours between
+        // them: no overshoot outside the palette, no reversal, and every stop
+        // still hit exactly so the accepted colours land where they were tuned.
+        var previous = SIMD3<Double>(repeating: -1)
+        var sample = 0.0
+        while sample < 60 {
+            let colour = SkyGradient.scatteredColour(relativeAirMass: sample)
+            #expect(colour.min() >= -1e-9 && colour.max() <= 1 + 1e-9)
+            #expect(colour.x >= previous.x - 1e-9)
+            #expect(colour.y >= previous.y - 1e-9)
+            #expect(colour.z >= previous.z - 1e-9)
+            previous = colour
+            sample += 0.01
+        }
+        for stop in EarthflightTuning.skyAirMassColourStops {
+            let colour = SkyGradient.scatteredColour(relativeAirMass: stop.airMass)
+            #expect(simd_length(colour - stop.colour) < 1e-9)
+        }
+
+        // Dithering has to preserve the colour it scatters. Averaging a row of
+        // texels must land back on the exact value, within well under a level,
+        // or the sky drifts away from the palette instead of merely losing its
+        // contour lines.
+        let rowCount = 256
+        let pixels = SkyGradient.pixels(heightMeters: 0, rowCount: rowCount)
+        let width = SkyGradient.textureWidth
+        var distinctRowMeans = Set<Double>()
+        for row in 0..<rowCount {
+            let zenithAngle = (Double(row) + 0.5) / Double(rowCount) * .pi
+            let exact = SkyGradient.colour(heightMeters: 0, zenithAngleRadians: zenithAngle) * 255
+            var sums = SIMD3<Double>(repeating: 0)
+            for column in 0..<width {
+                let offset = (row * width + column) * 4
+                sums += SIMD3(
+                    Double(pixels[offset]),
+                    Double(pixels[offset + 1]),
+                    Double(pixels[offset + 2])
+                )
+            }
+            let means = sums / Double(width)
+            #expect(simd_reduce_max(abs(means - exact)) < 0.5)
+            distinctRowMeans.insert(means.z)
+        }
+        // Plain rounding leaves about 30 distinct blue values across these rows,
+        // in runs hundreds of rows long, and those runs are the visible bands.
+        #expect(distinctRowMeans.count > rowCount / 2)
+    }
+
+    @Test("Stars fade in with the thinning sky and stay fixed to the Earth")
+    @MainActor
+    func starFieldFadeAndAnchor() {
+        // The same air mass that paints the sky is what hides the stars, so they
+        // are gone at sea level, coming in through the twenties of kilometres,
+        // and complete by the time the sky itself is black.
+        #expect(StarField.visibility(ellipsoidHeightMeters: 0) < 0.004)
+        #expect(StarField.visibility(ellipsoidHeightMeters: 1_000) < 0.01)
+        #expect(StarField.visibility(ellipsoidHeightMeters: 100_000) > 0.99)
+        var previousVisibility = 0.0
+        for step in 0...400 {
+            let visibility = StarField.visibility(ellipsoidHeightMeters: Double(step) * 500)
+            #expect(visibility >= previousVisibility - 1e-12)
+            previousVisibility = visibility
+        }
+
+        // Anchoring is the whole reason the field carries an orientation. Render
+        // frames rotate as the craft flies and jump at every rebase, so one star
+        // direction has to land on the same direction on the Earth from any
+        // frame. Getting the rotation inverted here would pop the sky instead.
+        let frames = [
+            EarthflightLocalFrame(
+                originEcef: FlightState.ecefPosition(
+                    longitudeDegrees: -0.1278,
+                    latitudeDegrees: 51.5074,
+                    ellipsoidHeightMeters: 120
+                )
+            ),
+            EarthflightLocalFrame(
+                originEcef: FlightState.ecefPosition(
+                    longitudeDegrees: 139.6917,
+                    latitudeDegrees: 35.6895,
+                    ellipsoidHeightMeters: 400_000
+                )
+            )
+        ]
+        let starDirection = simd_normalize(SIMD3<Float>(0.3, 0.6, -0.74))
+        let earthDirections = frames.map { frame -> SIMD3<Float> in
+            let orientation = StarField.earthAnchoredOrientation(
+                renderLocalFromEcef: frame.localFromEcef
+            )
+            let ecefFromRenderLocal = FlightState.realityKitMatrix(frame.ecefFromLocal)
+            let inRenderLocal = orientation.act(starDirection)
+            let inEcef = ecefFromRenderLocal * SIMD4<Float>(inRenderLocal, 0)
+            return SIMD3(inEcef.x, inEcef.y, inEcef.z)
+        }
+        #expect(simd_length(earthDirections[0] - starDirection) < 1e-5)
+        #expect(simd_length(earthDirections[0] - earthDirections[1]) < 1e-5)
+    }
+
     private func matrixDistance(_ lhs: simd_double4x4, _ rhs: simd_double4x4) -> Double {
         max(
             simd_length(lhs.columns.0 - rhs.columns.0),

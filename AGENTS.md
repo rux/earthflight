@@ -26,7 +26,7 @@ The successful experience is:
 7. The first MapKit search result wins without confirmation or disambiguation.
 8. The user is moved to approximately 1,000 metres above the ground at that location.
 9. Google’s required attribution remains visible.
-10. A minimal blue-gradient sky dome replaces an otherwise black background. Nothing else is added.
+10. A procedural sky dome replaces an otherwise black background. It is blue at ground level and black above the Karman line, its gradient follows the real horizon at any altitude, and stars fade in as the air thins. Nothing else is added.
 
 ## Project posture: deliberately raw
 
@@ -725,7 +725,7 @@ Established on the original M2 Vision Pro:
 * Google RGBA imagery is wrapped in a no-flip, upper-left-row-order `CGImage` and passed to RealityKit's asynchronous `TextureResource(image:options:)`. Do not restore the raw `TextureResource(dimensions:format:contents:)` upload without repeating the first-use headset test; it produced a pale white frame before every newly encountered texture became usable.
 * Milestone 6/7 planetary telemetry, its attachment and periodic console summary were removed. Sanitised failure diagnostics and the Jump To attachment remain.
 * Google attribution remains a persistent screen-space overlay and is shifted left with a `220` point trailing inset.
-* The procedural inward-facing unlit sky remains deliberately simple. Its radius is `600,000` metres; the accepted upper blue gradient remains, while the lower hemisphere now fades to a light dull sandy brown so a brief terrain gap is less stark than the former uninterrupted horizon blue.
+* The procedural inward-facing unlit sky remains deliberately simple. The lower hemisphere fades to a light dull sandy brown so a brief terrain gap is less stark than the former uninterrupted horizon blue. Its fixed 600,000 metre radius and its fixed colours were both later replaced; see the sky section below for what actually ships.
 
 ### Tile transitions: here be dragons
 
@@ -769,6 +769,88 @@ With the diagnostic sky magenta, broad peripheral gaps really were magenta, whil
 The tiny mountainous adjacent-LOD boundary sliver is newly observed but not yet classified beyond genuine magenta sky exposure. It was explicitly lower priority than the now-fixed first-load flash. Do not conflate it with texture readiness or revive the global ancestor shell to hide it. If it becomes worth addressing, reproduce one seam and inspect only the two drawable boundary meshes and their refinement relationship.
 
 Do not start a later milestone merely because the current change makes it convenient.
+
+## Sky: one gradient, driven by air mass
+
+**Status: implemented on 5 September 2026 as a cosmetic change beyond the original brief. Builds clean; the maths is covered by one regression test and by a standalone run, but nothing here has been seen on the physical headset.**
+
+The sky is still one inward-facing unlit sphere centred on the craft, still textured with a one-dimensional gradient in the angle from local up, and still drawn with `faceCulling = .front`. What changed is where the colours come from and how big the sphere is. `SkyDome.swift` holds all of it; `EarthflightTuning` holds the palette.
+
+### Why one dimension is still enough
+
+Seen from any point above a sphere, the ground, the horizon ring and the atmosphere's bright limb are all rotationally symmetric about local up. A circular gradient centred on the nadir and a vertical gradient on the texture are therefore the same picture, at every altitude. The dome does not need a second axis, a shader or a cube map. Note that `MeshResource.generateSphere` maps V linearly to polar angle, and a chord's midpoint bisects the arc, so the gradient stays accurate even where the sphere is coarsely tessellated.
+
+### The one scalar
+
+`SkyAtmosphere.ray` returns the **air mass** along a ray, in units of the sea-level vertical column, plus whether that ray reaches the Earth. Everything altitude dependent falls out of it, and no part of the palette mentions altitude:
+
+* straight up from sea level is 1, and the palette maps 1 to the accepted zenith blue;
+* the sea-level horizon is 34.3, and the palette maps 45 to the accepted pale band;
+* above the Karman line the upward air mass is 0.00001, which the palette renders black;
+* rays that graze the Earth from orbit still cross a long dense path, which is what keeps the thin bright rim;
+* the horizon moves down the sky as the Earth shrinks without anything computing where it is. Rays simply start reaching the ground.
+
+The model is an exponential atmosphere: scale height 8,500 m, top 120,000 m, sphere radius 6,371,000 m. Ellipsoid height is used directly as height above that sphere, which is self-consistent and keeps the WGS84 flattening out of it; flattening moves the horizon by hundredths of a degree, well under one texture row.
+
+Rays that reach the Earth show the sandy terrain-gap fill with the scattered colour laid over it as haze, `1 - exp(-0.1 * airMass)`. The two branches agree at the horizon, because a ray grazing it collects almost as much air as one just above, so the gradient crosses the horizon without a seam at any altitude.
+
+### Measured behaviour
+
+Verified by running the same code standalone on the Mac, not by looking at the headset:
+
+* the march agrees with the closed form `sqrt(pi R H / 2)` for a sea-level horizontal ray to 0.04 per cent;
+* zenith air mass by height: 1.00 at sea level, 0.79 at 2 km, 0.31 at 10 km, 0.095 at 20 km, 0.029 at 30 km, 0.0028 at 50 km, 0.000007 at 100 km;
+* the bright limb spans about 1.8 degrees from 400 km and about 0.15 degrees from 20,000 km, which matches photographs;
+* one 32 by 2,048 gradient costs 2.8 ms of pure arithmetic in a Release build on the Mac.
+
+### Why the sphere now grows
+
+The accepted 9,000,000 metre radius hides the Earth once the craft is far enough out to see the whole globe: at 20,000 km the visible limb is 25,590 km away, outside the dome, so the dome would depth-occlude it. `SkyDome.radiusMeters` therefore returns `max(9,000,000, 1.5 * sqrt(d^2 - R^2))`, the horizon tangent distance being the farthest visible point of the Earth. Below about 3,000 km the fixed radius wins, so low flight renders exactly the accepted geometry. The mesh keeps the fixed radius and the growth is applied as entity scale.
+
+**This is the one part that could fail on hardware.** The accepted build proves the visionOS far plane is at least 9,000 km, not that it is unbounded. If the globe or the sky is clipped at extreme altitude, the far plane is the suspect, not the gradient.
+
+### Rebuilding the texture
+
+**The frame is the throttle, not the threshold.** At most one rebuild starts per scene update, because `update` runs once a frame and the `isRebuilding` flag blocks a second. The height threshold, now 25 m or one part in ten thousand, only stops pointless work while hovering. The first version used 500 m and 1.5 per cent, and that was wrong: measured against the finished texture, climbing 500 m from 1,000 m moved some texels by 63 of the 255 available levels, and the owner saw the sky step every few hundred milliseconds. At 25 m the largest texel jump is 2.0 levels at 1,000 m and below 1 level everywhere above 5,000 m.
+
+That cadence is affordable because a gradient costs about 1 ms in a Release build on the Mac, down from 2.75 ms. `SkyGradient.raysPerRow` is what changed: one ray per row up to 10,000 km, four above. The limb is 1.8 degrees wide from low orbit and still 0.27 degrees from 10,000 km, against 0.088 degrees per row, so averaging buys nothing until it narrows past a row. Above 10,000 km four rays are cheaper anyway, 0.54 ms, because most rays miss the atmosphere and return immediately.
+
+`SkyAtmosphere` and `SkyGradient` are `nonisolated` on purpose: the target sets `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, and the pixels are computed in a `Task.detached` so the march never runs on the render actor. A climb now allocates a fresh 256 KB buffer and CGImage roughly once a frame; that is accepted rather than pooled.
+
+Upload uses `TextureResource.replace(using:options:)`, the CGImage path. Do not switch it to the raw-contents path: see the dragons section for what that did to tile textures. Mipmaps are off because the dome is always magnified, one row covering about a twentieth of a degree.
+
+### Two causes of banding, and what fixed each
+
+The owner reported faint lines in the gradient from the horizon through the mid blues. Measurement separated two causes; the ray march was not one of them, and raising `marchSampleCount` to 256 was tried and correctly reverted. Away from the horizon the march's worst second-to-first difference ratio is 0.67, which is smooth.
+
+* **Slope discontinuities at the palette stops.** Straight lines between stops change slope abruptly, and the eye turns that into a Mach band, which is exactly a line. At ground level the stops at air mass 3, 8 and 20 fall at 71, 83 and 88 degrees from the zenith, and the worst changed the slope of blue against angle by a factor of **8.6**. `SkyGradient.scatteredColour` now joins the stops with a monotone cubic, Fritsch-Carlson tangents and all, which drops the worst ratio to **1.7**. The stops themselves are untouched and are still hit exactly, so every tuned colour appears where it was tuned; the curve between them moves by up to 13 levels, which is the point. Do not go back to straight lines to save fifteen lines of code.
+* **Eight-bit quantisation.** Near the zenith the blue channel held one value for over a hundred rows, a band 10 to 15 degrees wide, about 400 screen pixels. `SkyGradient.dither` adds plus or minus half a level per texel before rounding. That takes the longest flat run in a row-mean profile from **1023 rows to 4**, and the number of distinct values across 2,048 rows from 62 to 1,809, while the row mean still tracks the exact colour to within 0.33 of a level. The offset is a hash of the texel, never a fresh random number, so the pattern is identical in every rebuild and the sky cannot sparkle during a climb. This is also why the texture must stay unmipmapped: mips would average the dither away.
+
+### Deliberate differences from the accepted ground-level sky
+
+* Pale sky is now concentrated in the last 10 to 15 degrees above the horizon rather than spread over 40. That is what a real sky does, but it is a visible change at ground level.
+* Below the horizon the fill reaches sandy within a few degrees instead of fading over 90. Terrain covers that region in normal flight; it shows only through gaps.
+* `EarthflightTuning.skyAirMassColourStops` is the whole palette. Tune there, not in `SkyDome.swift`.
+
+### Stars
+
+**Status: added on 5 September 2026 at the owner's request, after the gradient was physically accepted. Builds clean and the maths is covered, but the stars themselves have not been seen on the headset.**
+
+The owner asked for "a few twinkling white pixels" to stop raw black space feeling empty, and said explicitly that accuracy does not matter. `StarField.swift` is 900 white quads on a sphere at 95 per cent of the sky dome's radius, added as a child of the dome so they inherit its craft-centred position and its altitude-driven scale and can never fall outside it.
+
+Three things are worth keeping:
+
+* **The field is anchored to ECEF, not to the render frame.** `worldFromRenderLocal` reduces to `A * ecefFromRenderLocal`, so anything fixed in render-local jumps in world orientation by up to half a degree at every 50 km rebase, and rotates continuously as the craft flies. A symmetric gradient hides that; a star field would pop. `StarField.earthAnchoredOrientation` writes the render-local-from-ECEF rotation onto the field's parent, which cancels it exactly. The regression test checks that one star direction lands on the same ECEF direction from two very different render frames, because inverting that rotation is the easy mistake.
+* **Stars fade with the same air mass the gradient uses**, `exp(-zenithAirMass / 0.15)`: 0.001 at sea level, 0.13 at 10 km, 0.53 at 20 km, 0.94 at 40 km, 1 past the Karman line. There is no day, no night and no separate mode. Below 0.004 the whole field is disabled so a thousand transparent quads stay out of ordinary low flight.
+* **Twinkling is done in banks, not per star.** The stars are split across eight meshes whose material opacity breathes on periods of 2.3 to 13.7 seconds. Animating a thousand points individually would need a shader, and visionOS has no `CustomMaterial`. Every star in a bank breathes together, so the base brightness is deliberately high (0.72 plus or minus 0.28); a deeper swing would read as banks rather than as twinkling. Real stars do not twinkle in vacuum at all, and that is fine.
+
+The first pass used untextured quads at 0.060 to 0.160 degrees, and on the headset they were visibly square and about twice the size they wanted to be. Each star now carries one shared 32 by 32 `Opacity` texture: full brightness to seven tenths of the way out, then a smooth shoulder to nothing. Quads are 0.040 to 0.100 degrees, and the dot inside is roughly four fifths of that, so a star is 1.1 to 2.7 pixels against the 2.0 to 5.4 it was.
+
+The texture is mipmapped, deliberately and unlike the sky gradient. A star only a pixel or two across minifies a long way, and without mips it would sample one arbitrary texel and flicker as the head turns. The cost is that the smallest stars sample the falloff's mean, 0.571, so they peak at about 57 per cent white; `starTwinkleBaseBrightness` was raised from 0.72 to 0.80 to compensate. Base plus amplitude must stay at or below 1.
+
+Two consequences that are accepted rather than overlooked. Stars are drawn over the sandy terrain-gap fill, so they can show through a hole in the tiles below the horizon; tiles are opaque and nearer, so they occlude the stars correctly wherever they have loaded. And the fade is global rather than per direction, so stars near the bright limb are not washed out individually; at the altitudes where stars appear that band is only a couple of degrees wide.
+
+`FlightState.realityKitMatrix` and `doubleMatrix` were marked `nonisolated` for this. They are pure casts, and the star field needs them off the render actor.
 
 ## Codex working rules
 

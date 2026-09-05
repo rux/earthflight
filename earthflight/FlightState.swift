@@ -447,7 +447,10 @@ final class FlightState {
         worldFromCraftAtLaunch * renderLocalFromCraft.inverse
     }
 
-    static func realityKitMatrix(_ matrix: simd_double4x4) -> simd_float4x4 {
+    // Pure casts between the Double planetary maths and RealityKit's Float
+    // transforms. Nonisolated because the target defaults to MainActor isolation
+    // and nothing about a matrix cast belongs on the render actor.
+    nonisolated static func realityKitMatrix(_ matrix: simd_double4x4) -> simd_float4x4 {
         var result = matrix_identity_float4x4
         for column in 0..<4 {
             for row in 0..<4 {
@@ -457,7 +460,7 @@ final class FlightState {
         return result
     }
 
-    static func doubleMatrix(_ matrix: simd_float4x4) -> simd_double4x4 {
+    nonisolated static func doubleMatrix(_ matrix: simd_float4x4) -> simd_double4x4 {
         var result = matrix_identity_double4x4
         for column in 0..<4 {
             for row in 0..<4 {

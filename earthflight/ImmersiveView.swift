@@ -38,14 +38,14 @@ struct ImmersiveView: View {
                 lodTransitionsEnabled: EarthflightTuning.lodTransitionsEnabled,
                 lodTransitionLengthSeconds: EarthflightTuning.lodTransitionLengthSeconds,
                 forbidTileHoles: EarthflightTuning.forbidTileHoles,
-                drawCoarseAncestorShell: EarthflightTuning.drawCoarseAncestorShell,
-                tileRetirementOverlapUpdates: EarthflightTuning.tileRetirementOverlapUpdates,
-                logTileRetirementDiagnostics: EarthflightTuning.logTileRetirementDiagnostics,
-                onTileVisible: { tileIdentifier, primitives in
-                    googleRenderer.show(primitives: primitives, for: tileIdentifier)
+                onTilePreparationRequested: { tileIdentifier, primitives in
+                    googleRenderer.prepare(primitives: primitives, for: tileIdentifier)
+                },
+                onTileVisible: { tileIdentifier in
+                    googleRenderer.show(tileIdentifier: tileIdentifier)
                 },
                 onRenderSetComplete: {
-                    googleRenderer.retireTilesNotSelectedThisUpdate()
+                    googleRenderer.publishSelectedAndRetireOutgoing()
                 },
                 onTileFreed: { tileIdentifier in
                     googleRenderer.remove(tileIdentifier: tileIdentifier)
@@ -178,11 +178,6 @@ struct ImmersiveView: View {
             format: rendererFormat
         )
         let image = renderer.image { context in
-            if EarthflightTuning.useDiagnosticSkyColour {
-                UIColor.magenta.setFill()
-                context.fill(CGRect(x: 0, y: 0, width: 32, height: 512))
-                return
-            }
             let zenith = UIColor(red: 0.06, green: 0.32, blue: 0.68, alpha: 1).cgColor
             let softSky = UIColor(red: 0.32, green: 0.64, blue: 0.88, alpha: 1).cgColor
             let warmHorizon = UIColor(red: 0.74, green: 0.84, blue: 0.91, alpha: 1).cgColor

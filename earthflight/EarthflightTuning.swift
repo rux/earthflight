@@ -74,50 +74,10 @@ enum EarthflightTuning {
     static let lodTransitionsEnabled = false
     static let lodTransitionLengthSeconds: Float = 0.3
 
-    // Cesium refuses to refine a parent until every child is ready to render, so
-    // ground coming into view always has something coarse rather than briefly
-    // nothing. Detail arrives a little later in exchange. This is the setting
-    // for the momentary transparent tiles over ground not yet visited.
+    // In cesium-native 0.64 this affects culled descendants only; it is not a
+    // general replacement-coverage guarantee. Leave the accepted value alone.
     static let forbidTileHoles = true
 
-    // Keeping every ancestor of every selected tile on screen does cover the
-    // holes Cesium leaves when it refines past children that have not arrived,
-    // but it was measured on the device at up to 96 extra tiles against a render
-    // set of 90 to 236, and it starved tile loading badly enough to be worse
-    // than the gap it fixed. Left off, and left in place only because a narrower
-    // version of the same idea may still be the answer.
-    static let drawCoarseAncestorShell = false
-
-    // Temporary bisection switch. False stops Earthflight hiding anything at
-    // all, so geometry only accumulates. If the momentary transparent tiles
-    // survive that, nothing Earthflight removes can be causing them and the gap
-    // is entirely in Cesium's selection. Memory grows while it is off, so fly
-    // briefly. Delete once the cause is settled.
-    static let retireOutgoingTiles = true
-
-    // Outgoing tiles are retired only after the render set has been fully
-    // installed for this many consecutive scene updates. Disabling an entity
-    // takes effect on the frame it happens, but a freshly attached one is not
-    // necessarily drawn until RealityKit has taken it up, so retiring on the
-    // first clear update leaves no frame where both LODs are on screen. `2` is
-    // the smallest value that guarantees one such frame. Raise it if a gap
-    // still shows; the cost is a slightly longer opaque overlap.
-    static let tileRetirementOverlapUpdates: Int32 = 2
-
-    // Temporary. Paints the sky dome flat magenta instead of its gradient, to
-    // settle what the momentary flashes actually are. Magenta flashes mean
-    // geometry really is missing and the dome is showing through. Black or grey
-    // flashes mean the dome is not what is visible, the gap is not a coverage
-    // problem at all, and ten rounds of coverage work were aimed at the wrong
-    // thing. Set false and delete once that is settled.
-    static let useDiagnosticSkyColour = false
-
-    // Prints a one-line tile-retirement summary each second: render-set size,
-    // how many selected tiles Earthflight cannot draw and why, how many are
-    // awaiting installation, the shell size, and how many updates retired
-    // anything. See the tile-transition dragons section in AGENTS.md for how to
-    // read it and what it has already ruled out.
-    static let logTileRetirementDiagnostics = false
 
     // MARK: - Presentation
 

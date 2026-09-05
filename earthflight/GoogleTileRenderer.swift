@@ -20,24 +20,15 @@ final class GoogleTileRenderer {
             return container
         }()
         var anchoredEntities: [AnchoredEntity] = []
-        // Installation has concluded, whether or not it yielded geometry.
-        // A non-empty `anchoredEntities` cannot say that on its own: a payload
-        // that produces nothing usable would otherwise be rebuilt every frame
-        // and would count as pending forever, jamming the bridge's hide gate.
-        var isInstalled = false
+        var isPrepared = false
         // The update on which Cesium last selected this tile. Retirement is the
         // difference between what is drawn and what was selected just now.
         var lastSelectedUpdate = 0
     }
 
     private var tileEntitiesByIdentifier: [String: TileEntities] = [:]
-    private var installingTileIdentifiers: Set<String> = []
     private var currentUpdate = 0
     private var renderLocalFromEcef: simd_double4x4
-
-    // Temporary, alongside the bridge's per-second summary. A tile Cesium frees
-    // while Earthflight is still drawing it vanishes with no handoff at all.
-    private var removedWhileVisibleCount = 0
 
     init(renderLocalFromEcef: simd_double4x4) {
         self.renderLocalFromEcef = renderLocalFromEcef
@@ -53,16 +44,21 @@ final class GoogleTileRenderer {
     }
 
     /// Called once per scene update, before the tiles selected by that update
-    /// are shown, so `retireTilesNotSelectedThisUpdate` can tell the two apart.
+    /// are shown, so the atomic handoff can tell the two sets apart.
     func beginUpdate() {
         currentUpdate &+= 1
     }
 
-    /// Hide everything still on screen that Cesium did not select this update.
-    /// The bridge calls this only once every selected tile is installed, so a
-    /// replacement is always present before its predecessor goes.
-    func retireTilesNotSelectedThisUpdate() {
-        guard EarthflightTuning.retireOutgoingTiles else { return }
+    /// Publish the complete installed selection and retire its predecessors as
+    /// one uninterrupted main-actor scene change. Prepared containers remain
+    /// attached but disabled until this handoff, so REPLACE LODs never overlap
+    /// merely because their installations completed at different times.
+    func publishSelectedAndRetireOutgoing() {
+        for tileEntities in tileEntitiesByIdentifier.values
+        where tileEntities.isPrepared
+            && tileEntities.lastSelectedUpdate == currentUpdate {
+            tileEntities.container.isEnabled = true
+        }
         for (tileIdentifier, tileEntities) in tileEntitiesByIdentifier
         where tileEntities.container.isEnabled
             && tileEntities.lastSelectedUpdate != currentUpdate {
@@ -70,26 +66,28 @@ final class GoogleTileRenderer {
         }
     }
 
-    func show(primitives: [CesiumPrimitivePayload], for tileIdentifier: String) {
-        let tileEntities: TileEntities
-        if let existing = tileEntitiesByIdentifier[tileIdentifier] {
-            tileEntities = existing
-        } else {
-            tileEntities = TileEntities()
-            tileEntitiesByIdentifier[tileIdentifier] = tileEntities
+    func show(tileIdentifier: String) {
+        guard let tileEntities = tileEntitiesByIdentifier[tileIdentifier],
+              tileEntities.isPrepared else {
+            assertionFailure("Cesium selected tile before RealityKit preparation completed")
+            return
         }
         tileEntities.lastSelectedUpdate = currentUpdate
-        if tileEntities.isInstalled {
-            tileEntities.container.isEnabled = true
+    }
+
+    /// Starts from Cesium's load-thread preparation callback, before the tile
+    /// can become selectable. The bridge resolves Cesium's preparation future
+    /// only after this method reports complete success or failure.
+    func prepare(primitives: [CesiumPrimitivePayload], for tileIdentifier: String) {
+        guard tileEntitiesByIdentifier[tileIdentifier] == nil else {
+            CesiumBridge.tileDidFinishPreparing(tileIdentifier, succeeded: false)
             return
         }
-        guard !installingTileIdentifiers.contains(tileIdentifier) else {
-            return
-        }
-        installingTileIdentifiers.insert(tileIdentifier)
+        let tileEntities = TileEntities()
+        tileEntitiesByIdentifier[tileIdentifier] = tileEntities
 
         Task {
-            await install(
+            await prepare(
                 primitives: primitives,
                 for: tileIdentifier,
                 tileEntities: tileEntities
@@ -101,12 +99,15 @@ final class GoogleTileRenderer {
         tileEntitiesByIdentifier[tileIdentifier]?.container.isEnabled = false
     }
 
-    private func install(
+    private func prepare(
         primitives: [CesiumPrimitivePayload],
         for tileIdentifier: String,
         tileEntities: TileEntities
     ) async {
-        defer { installingTileIdentifiers.remove(tileIdentifier) }
+        var succeeded = false
+        defer {
+            CesiumBridge.tileDidFinishPreparing(tileIdentifier, succeeded: succeeded)
+        }
 
         var entities: [AnchoredEntity] = []
         for payload in primitives {
@@ -116,12 +117,12 @@ final class GoogleTileRenderer {
                 entities.append(entity)
             }
         }
-        // Identity is the only guard needed. `remove` drops the dictionary
-        // entry, so a freed tile can never be reattached under a later
-        // TileEntities, and a tile merely deselected while preparing keeps the
-        // work: discarding it left that ground uncovered for far longer than
-        // the deselection lasted.
-        guard tileEntitiesByIdentifier[tileIdentifier] === tileEntities else {
+        // Partial construction is failure, not covering geometry. Cesium keeps
+        // the replacement future unresolved until this decision is known.
+        guard !primitives.isEmpty,
+              entities.count == primitives.count,
+              tileEntitiesByIdentifier[tileIdentifier] === tileEntities else {
+            tileEntitiesByIdentifier.removeValue(forKey: tileIdentifier)
             return
         }
 
@@ -132,26 +133,17 @@ final class GoogleTileRenderer {
             tileEntities.container.addChild(anchoredEntity.entity)
         }
         tileEntities.anchoredEntities = entities
-        tileEntities.isInstalled = true
-        // Visibility follows the current selection, not whether the install
-        // happened to survive it, so a tile finishing while selected is drawn
-        // immediately rather than one frame later when show() next runs.
-        tileEntities.container.isEnabled =
-            tileEntities.lastSelectedUpdate == currentUpdate
+        tileEntities.isPrepared = true
+        // Preparation may attach resources, but it must not publish them before
+        // Cesium selects the tile. The latest render frame is applied above.
+        tileEntities.container.isEnabled = false
         earthRoot.addChild(tileEntities.container)
-        // The bridge keeps the outgoing LOD on screen until this fires. Report
-        // even when the payload produced no geometry: one unusable tile must not
-        // stop every outgoing tile from ever being hidden.
-        CesiumBridge.tileDidFinishInstalling(tileIdentifier)
+        succeeded = true
     }
 
     func remove(tileIdentifier: String) {
         guard let tileEntities = tileEntitiesByIdentifier.removeValue(forKey: tileIdentifier) else {
             return
-        }
-        if tileEntities.isInstalled && tileEntities.container.isEnabled {
-            removedWhileVisibleCount += 1
-            print("Earthflight: removed a visible tile (\(removedWhileVisibleCount) so far)")
         }
         tileEntities.container.removeFromParent()
     }
@@ -230,15 +222,34 @@ final class GoogleTileRenderer {
             throw GoogleTileRendererError.invalidImage
         }
 
-        let contents = TextureResource.Contents(
-            mipmapLevels: [
-                .mip(data: payload.rgbaImage, bytesPerRow: payload.imageWidth * 4)
-            ]
-        )
+        // Keep Cesium's decoded RGBA row order unchanged. The raw-contents
+        // TextureResource initializer produced one white frame on first visible
+        // use on the M2 Vision Pro, even after a completed GPU copy proved its
+        // pixels readable. The CGImage initializer presents correctly from its
+        // first frame and also produced more natural colour on the same route.
+        guard let provider = CGDataProvider(data: payload.rgbaImage as CFData),
+              let colourSpace = CGColorSpace(name: CGColorSpace.displayP3),
+              let image = CGImage(
+                width: payload.imageWidth,
+                height: payload.imageHeight,
+                bitsPerComponent: 8,
+                bitsPerPixel: 32,
+                bytesPerRow: payload.imageWidth * 4,
+                space: colourSpace,
+                bitmapInfo: [
+                    .byteOrder32Big,
+                    CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue)
+                ],
+                provider: provider,
+                decode: nil,
+                shouldInterpolate: true,
+                intent: .defaultIntent
+              ) else {
+            throw GoogleTileRendererError.invalidImage
+        }
         return try await TextureResource(
-            dimensions: .dimensions(width: payload.imageWidth, height: payload.imageHeight),
-            format: .color(.displayP3, pixelFormat: .rgba8Unorm),
-            contents: contents
+            image: image,
+            options: TextureResource.CreateOptions(semantic: .color)
         )
     }
 

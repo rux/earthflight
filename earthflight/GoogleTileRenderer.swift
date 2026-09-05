@@ -12,15 +12,32 @@ final class GoogleTileRenderer {
     }
 
     private final class TileEntities {
-        let container = Entity()
+        // Starts disabled so a tile still being prepared is never a candidate
+        // for retirement, and so nothing empty is ever briefly in the scene.
+        let container: Entity = {
+            let container = Entity()
+            container.isEnabled = false
+            return container
+        }()
         var anchoredEntities: [AnchoredEntity] = []
+        // Installation has concluded, whether or not it yielded geometry.
+        // A non-empty `anchoredEntities` cannot say that on its own: a payload
+        // that produces nothing usable would otherwise be rebuilt every frame
+        // and would count as pending forever, jamming the bridge's hide gate.
+        var isInstalled = false
+        // The update on which Cesium last selected this tile. Retirement is the
+        // difference between what is drawn and what was selected just now.
+        var lastSelectedUpdate = 0
     }
 
     private var tileEntitiesByIdentifier: [String: TileEntities] = [:]
-    private var visibleTileIdentifiers: Set<String> = []
     private var installingTileIdentifiers: Set<String> = []
-    private var tileGenerations: [String: Int] = [:]
+    private var currentUpdate = 0
     private var renderLocalFromEcef: simd_double4x4
+
+    // Temporary, alongside the bridge's per-second summary. A tile Cesium frees
+    // while Earthflight is still drawing it vanishes with no handoff at all.
+    private var removedWhileVisibleCount = 0
 
     init(renderLocalFromEcef: simd_double4x4) {
         self.renderLocalFromEcef = renderLocalFromEcef
@@ -35,8 +52,25 @@ final class GoogleTileRenderer {
         }
     }
 
+    /// Called once per scene update, before the tiles selected by that update
+    /// are shown, so `retireTilesNotSelectedThisUpdate` can tell the two apart.
+    func beginUpdate() {
+        currentUpdate &+= 1
+    }
+
+    /// Hide everything still on screen that Cesium did not select this update.
+    /// The bridge calls this only once every selected tile is installed, so a
+    /// replacement is always present before its predecessor goes.
+    func retireTilesNotSelectedThisUpdate() {
+        guard EarthflightTuning.retireOutgoingTiles else { return }
+        for (tileIdentifier, tileEntities) in tileEntitiesByIdentifier
+        where tileEntities.container.isEnabled
+            && tileEntities.lastSelectedUpdate != currentUpdate {
+            hide(tileIdentifier: tileIdentifier)
+        }
+    }
+
     func show(primitives: [CesiumPrimitivePayload], for tileIdentifier: String) {
-        visibleTileIdentifiers.insert(tileIdentifier)
         let tileEntities: TileEntities
         if let existing = tileEntitiesByIdentifier[tileIdentifier] {
             tileEntities = existing
@@ -44,7 +78,8 @@ final class GoogleTileRenderer {
             tileEntities = TileEntities()
             tileEntitiesByIdentifier[tileIdentifier] = tileEntities
         }
-        if !tileEntities.anchoredEntities.isEmpty {
+        tileEntities.lastSelectedUpdate = currentUpdate
+        if tileEntities.isInstalled {
             tileEntities.container.isEnabled = true
             return
         }
@@ -52,38 +87,26 @@ final class GoogleTileRenderer {
             return
         }
         installingTileIdentifiers.insert(tileIdentifier)
-        let generation = tileGenerations[tileIdentifier, default: 0]
 
         Task {
             await install(
                 primitives: primitives,
                 for: tileIdentifier,
-                tileEntities: tileEntities,
-                generation: generation
+                tileEntities: tileEntities
             )
         }
     }
 
     func hide(tileIdentifier: String) {
-        visibleTileIdentifiers.remove(tileIdentifier)
-        if installingTileIdentifiers.contains(tileIdentifier) {
-            tileGenerations[tileIdentifier, default: 0] += 1
-        }
         tileEntitiesByIdentifier[tileIdentifier]?.container.isEnabled = false
     }
 
     private func install(
         primitives: [CesiumPrimitivePayload],
         for tileIdentifier: String,
-        tileEntities: TileEntities,
-        generation: Int
+        tileEntities: TileEntities
     ) async {
-        defer {
-            installingTileIdentifiers.remove(tileIdentifier)
-            if tileEntitiesByIdentifier[tileIdentifier] == nil {
-                tileGenerations.removeValue(forKey: tileIdentifier)
-            }
-        }
+        defer { installingTileIdentifiers.remove(tileIdentifier) }
 
         var entities: [AnchoredEntity] = []
         for payload in primitives {
@@ -93,10 +116,12 @@ final class GoogleTileRenderer {
                 entities.append(entity)
             }
         }
-        guard visibleTileIdentifiers.contains(tileIdentifier),
-              tileEntitiesByIdentifier[tileIdentifier] === tileEntities,
-              tileGenerations[tileIdentifier, default: 0] == generation,
-              !entities.isEmpty else {
+        // Identity is the only guard needed. `remove` drops the dictionary
+        // entry, so a freed tile can never be reattached under a later
+        // TileEntities, and a tile merely deselected while preparing keeps the
+        // work: discarding it left that ground uncovered for far longer than
+        // the deselection lasted.
+        guard tileEntitiesByIdentifier[tileIdentifier] === tileEntities else {
             return
         }
 
@@ -107,22 +132,26 @@ final class GoogleTileRenderer {
             tileEntities.container.addChild(anchoredEntity.entity)
         }
         tileEntities.anchoredEntities = entities
+        tileEntities.isInstalled = true
+        // Visibility follows the current selection, not whether the install
+        // happened to survive it, so a tile finishing while selected is drawn
+        // immediately rather than one frame later when show() next runs.
+        tileEntities.container.isEnabled =
+            tileEntities.lastSelectedUpdate == currentUpdate
         earthRoot.addChild(tileEntities.container)
-        // Cesium's transition progress is held while this renderer's async work
-        // is pending. Signal only after the guarded container is actually attached.
+        // The bridge keeps the outgoing LOD on screen until this fires. Report
+        // even when the payload produced no geometry: one unusable tile must not
+        // stop every outgoing tile from ever being hidden.
         CesiumBridge.tileDidFinishInstalling(tileIdentifier)
-        tileGenerations.removeValue(forKey: tileIdentifier)
     }
 
     func remove(tileIdentifier: String) {
-        visibleTileIdentifiers.remove(tileIdentifier)
-        if installingTileIdentifiers.contains(tileIdentifier) {
-            tileGenerations[tileIdentifier, default: 0] += 1
-        } else {
-            tileGenerations.removeValue(forKey: tileIdentifier)
-        }
         guard let tileEntities = tileEntitiesByIdentifier.removeValue(forKey: tileIdentifier) else {
             return
+        }
+        if tileEntities.isInstalled && tileEntities.container.isEnabled {
+            removedWhileVisibleCount += 1
+            print("Earthflight: removed a visible tile (\(removedWhileVisibleCount) so far)")
         }
         tileEntities.container.removeFromParent()
     }

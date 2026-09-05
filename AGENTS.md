@@ -717,13 +717,54 @@ Established on the original M2 Vision Pro:
 * Left-stick translation and vertical movement have a linear `0.5` second release decay. Active input remains immediate. Setting the duration to zero disables the effect and bypasses its state and calculations. Any new deliberate input cancels the existing decay. Per-axis release state preserves the strongest deliberate sample so the Switch Pro stick's opposite-direction recenter rebound cannot reverse a same-direction release tail.
 * The accepted controller remap is: `buttonX` rolls left; `buttonY` rolls right; either L or R ascends; either ZL or ZR descends; holding both ascent buttons or both descent buttons applies the normal `4` times boost to vertical movement. The physical bottom face button remains the general boost control. Right-stick click remains the complete orientation reset.
 * A completed Jump To now performs that same complete orientation reset. It preserves the resolved destination position and active controller input, while clearing any residual movement-release tail.
-* Cesium LOD selection uses maximum screen-space error `24`, maximum simultaneous tile loads `8`, and LOD transitions enabled with a `0.3` second transition length. No custom distance LOD, fog-density tuning, tile excluder, fade shader, or second selection system was added.
+* Cesium LOD selection uses maximum screen-space error `24` and maximum simultaneous tile loads `8`. LOD transitions were later turned off; see the dragons section. No custom distance LOD, fog-density tuning, tile excluder, fade shader, or second selection system was added.
 * The Cesium transient in-memory tile cache is `1 GiB` (`1,024 * 1,024 * 1,024` bytes). It is not a persistent disk cache. The larger bound may reduce reloads after looking away and back, at the cost of additional memory pressure.
-* RealityKit's transparent `OpacityComponent` crossfade was rejected because overlapping photogrammetry exposed the sky and geometry behind tall structures. The accepted transition is an opaque, readiness-gated handoff: Cesium transition progress pauses while any selected replacement is still awaiting guarded RealityKit installation; the replacement reports ready only after its tile container is attached to `earthRoot`; outgoing tiles remain enabled and fully opaque until Cesium says the transition has completed, and only then use the existing hide path. This contract applies in both refinement and unrefinement directions.
-* Tile containers remain identity children of `earthRoot`, while primitive transforms retain their independent ECEF/render-local anchors. Generation-token checks prevent freed or hidden tiles from reappearing after asynchronous preparation, and installation uses the latest render frame so rebases and Jump To remain coherent.
+* RealityKit's transparent `OpacityComponent` crossfade was rejected because overlapping photogrammetry exposed the sky and geometry behind tall structures. The accepted transition is an opaque, readiness-gated handoff. `GoogleTileRenderer` stamps each tile it shows with the current update; `retireTilesNotSelectedThisUpdate` hides the difference between what it is drawing and what Cesium selected just now; and the bridge calls that only once every selected tile is installed in RealityKit, for `EarthflightTuning.tileRetirementOverlapUpdates` consecutive updates. Cesium calls a tile renderable the moment `prepareInMainThread` returns, while Earthflight's mesh and texture creation finishes several frames later, so retiring inside that window is what exposes sky. A momentary transparency defect survives all of this; see the dragons section below before touching any of it.
+* Tile containers remain identity children of `earthRoot`, while primitive transforms retain their independent ECEF/render-local anchors. Installation uses the latest render frame so rebases and Jump To remain coherent, and identity of the `TileEntities` prevents a freed tile from being reattached after asynchronous preparation.
 * Milestone 6/7 planetary telemetry, its attachment and periodic console summary were removed. Sanitised failure diagnostics and the Jump To attachment remain.
 * Google attribution remains a persistent screen-space overlay and is shifted left with a `220` point trailing inset.
 * The procedural inward-facing unlit sky remains deliberately simple. Its radius is `600,000` metres; the accepted upper blue gradient remains, while the lower hemisphere now fades to a light dull sandy brown so a brief terrain gap is less stark than the former uninterrupted horizon blue.
+
+### Tile transitions: here be dragons
+
+**Status: unresolved.** Read this before touching tile visibility, retirement or selection. Ten rounds of instrumented flights went into it, and most of the obvious explanations are already disproved by measurement on the physical headset.
+
+#### The symptom
+
+Momentary flashes of transparency through to the sky dome, one tile at a time, apparently a single frame, never several together. They occur over ground not previously visited, in any direction of travel. Flying back over ground already visited is clean, because unrefinement re-enables tiles that are already installed and needs no new work. Refinement into new ground is where it happens, and the flashes track the count of tiles awaiting RealityKit installation.
+
+#### Disproved by measurement, do not re-derive
+
+* **Earthflight is not hiding anything too early.** Retirement is derived from the difference between what the renderer is drawing and what Cesium selected this update, and it happens only when the whole selected set is installed. Deriving it from Cesium's `tilesFadingOut` instead, as the first implementation did, genuinely was wrong: that list names a tile only on the single frame its overlap window elapses.
+* **Earthflight is not removing anything visible.** `GoogleTileRenderer.remove` prints when it drops a tile that is installed and enabled. It never printed across many flights.
+* **Cesium is not selecting unloaded tiles.** The per-update counters for selected tiles that are not `Done` or `Failed`, that are external content, or that have no identifier, all read zero throughout flight. Every tile Cesium selects, Earthflight draws.
+* **Waiting more frames does not help.** `tileRetirementOverlapUpdates` guarantees at least one frame where both LODs are on screen, on the theory that a freshly attached entity might not be drawn until RealityKit takes it up. It made no observable difference. It is left at `2`; do not credit it with anything.
+* **`TilesetOptions::forbidHoles` does not help.** Its doc comment promises a parent will not refine until every child is ready, but all three uses in cesium-native 0.64 are in the culled branch of `visitTileIfNeeded`. It only makes culled tiles load and report upward. Do not re-trust that comment.
+* **Covering the gaps individually does not help.** Finding each uncovered sibling and showing the nearest drawable ancestor changed nothing visible.
+* **Covering everything is worse than the defect.** Keeping the whole ancestor chain of every selected tile on screen does close the gaps, but measured at up to 96 extra tiles against a render set of 90 to 236 it starved tile loading badly. Kept behind `EarthflightTuning.drawCoarseAncestorShell`, off.
+* **Setting `retireOutgoingTiles` false, so nothing is ever hidden, is much worse**: large areas stay stuck on coarse tiles. Retirement is doing real work.
+
+#### Established facts about cesium-native 0.64
+
+* `Tileset::updateViewGroup` permanently forces `enableFrustumCulling` and `enableFogCulling` to false whenever `enableLodTransitionPeriod` is true. That floods the selection with tiles right around the globe: it took the render set from about 90 to 215. Since Earthflight no longer reads `tilesFadingOut`, the transition period buys nothing, so `lodTransitionsEnabled` is now `false`.
+* `visitVisibleChildrenNearToFar` ANDs `allAreRenderable` across children but ORs `anyWereRenderedLastFrame`. One already-rendered child switches `kickDueToNonReadyDescendant` off, so the parent refines regardless, drawing the children that are ready and omitting those that are not. `TilesetOptions` exposes no lever for this.
+* A counter that marks every selected tile and its ancestors, then looks for a child visible to the camera yet neither selected nor an ancestor of anything selected, reports two to nine such gaps on essentially every update, including updates with nothing installing and retirement running freely. That measurement is real but has known false positives, because Google's bounding volumes are loose.
+* `Tile::isRenderable` is false for every `Done` tile that is unconditionally refined and has children, which is exactly Google's structural external-tileset nodes. Never use it as a proxy for "has content"; test `Tile::getState` against `Done` and `Failed`.
+* Tiles referenced by an `IntrusivePointer` count as content-referenced and cannot be unloaded, so holding `Tile::ConstPointer` is a valid way to keep content alive while it is still drawn.
+* Do not key renderer state on `%p` of the `Tile`. Cesium destroys and reallocates `Tile` objects constantly while flying into new ground, and a recycled address would alias two live tiles. Identifiers are now a counter assigned in `prepareInMainThread`.
+
+#### The next step
+
+Do not attempt an eleventh fix by inference. The category of the defect is not established. `EarthflightTuning.useDiagnosticSkyColour` paints the sky dome flat magenta:
+
+* **magenta flashes** mean geometry really is missing and the dome is showing through, so coverage is the right category and the ancestor shell is worth narrowing rather than abandoning;
+* **any other colour** means the dome is not what shows through, the gap was never a coverage problem, and the search should move to the render path instead: a tile drawn but momentarily mis-transformed, or a RealityKit hitch as `MeshResource` and `TextureResource` are created on the main actor, which would also explain why it only ever happens where installs are running.
+
+`EarthflightTuning.logTileRetirementDiagnostics` turns the per-update summary back on. It prints render-set size, the counts of selected tiles Earthflight cannot draw broken down by reason, how many are awaiting installation, the shell size, and how many of the last 90 updates retired anything.
+
+#### If it proves not worth fixing
+
+The defect is brief and only occurs over new ground. Leaving it is a legitimate outcome. The sky dome's lower hemisphere is already a dull sandy brown for exactly this reason, and widening that treatment is cheaper than the alternatives measured above.
 
 Do not start a later milestone merely because the current change makes it convenient.
 

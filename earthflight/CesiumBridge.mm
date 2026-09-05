@@ -57,14 +57,60 @@
 namespace {
 
 void (^tileReady)(NSString *, NSArray<CesiumPrimitivePayload *> *);
-void (^tileHidden)(NSString *);
+void (^renderSetComplete)(void);
 void (^tileFreed)(NSString *);
 void (^attributionChanged)(NSString *);
 std::shared_ptr<CesiumUtility::CreditSystem> creditSystem;
 std::string lastAttribution;
-bool lodTransitionsAreEnabled = false;
-bool pauseLodTransitionsForPendingInstall = false;
 std::unordered_set<std::string> realityKitInstalledTiles;
+unsigned long long nextTileIdentifier = 1;
+bool drawAncestorShell = true;
+int32_t requiredCompleteUpdates = 1;
+int32_t consecutiveCompleteUpdates = 0;
+
+// Temporary, alongside GoogleTileRenderer's own counters. Delete both, and the
+// tuning constant, once the tile-retirement gap is settled.
+bool logRetirementDiagnostics = false;
+int32_t retirementUpdates = 0;
+int32_t worstUnloaded = 0;
+int32_t worstExternal = 0;
+int32_t worstEmpty = 0;
+int32_t worstUnusable = 0;
+int32_t worstAwaitingInstall = 0;
+int32_t worstShellSize = 0;
+int32_t updatesSinceLog = 0;
+
+void logRetirement(
+    int32_t renderSetSize,
+    int32_t unloaded,
+    int32_t external,
+    int32_t empty,
+    int32_t unusable,
+    int32_t awaitingInstall,
+    int32_t shellSize,
+    bool retiring) {
+    if (retiring) ++retirementUpdates;
+    worstShellSize = std::max(worstShellSize, shellSize);
+    worstUnloaded = std::max(worstUnloaded, unloaded);
+    worstExternal = std::max(worstExternal, external);
+    worstEmpty = std::max(worstEmpty, empty);
+    worstUnusable = std::max(worstUnusable, unusable);
+    worstAwaitingInstall = std::max(worstAwaitingInstall, awaitingInstall);
+    if (++updatesSinceLog < 90) return;
+    NSLog(@"Earthflight retirement: rendered=%d unloaded=%d external=%d empty=%d "
+          @"unusable=%d installing=%d shell=%d retiringUpdates=%d",
+          renderSetSize, worstUnloaded, worstExternal, worstEmpty,
+          worstUnusable, worstAwaitingInstall, worstShellSize,
+          retirementUpdates);
+    retirementUpdates = 0;
+    worstUnloaded = 0;
+    worstExternal = 0;
+    worstEmpty = 0;
+    worstUnusable = 0;
+    worstAwaitingInstall = 0;
+    worstShellSize = 0;
+    updatesSinceLog = 0;
+}
 std::optional<CesiumGeospatial::EarthGravitationalModel1996Grid> egm96Grid;
 
 const CesiumGeospatial::EarthGravitationalModel1996Grid& loadedEGM96Grid() {
@@ -86,6 +132,58 @@ struct TileRenderResources {
     __strong NSString *identifier;
     __strong NSArray<CesiumPrimitivePayload *> *primitives;
 };
+
+// Cesium refines a parent as soon as one of its children has been rendered:
+// `visitVisibleChildrenNearToFar` ANDs `allAreRenderable` across children but
+// ORs `anyWereRenderedLastFrame`, so one rendered child switches the kick off
+// and the parent refines regardless, drawing the ready children and omitting the
+// rest. The omitted child's ground is then covered by nothing, and Earthflight
+// draws exactly the set it is given. TilesetOptions has no lever for this:
+// forbidHoles only acts on culled tiles.
+//
+// Locating each such gap and covering it individually was tried and did not hold
+// on the device. This instead keeps the whole ancestor chain of every selected
+// tile on screen, so coarse geometry always sits beneath the fine level and any
+// hole in it shows lower detail rather than sky. Showing an ancestor stamps it
+// as selected this update, which is what stops retirement taking it away, and a
+// tile stops being stamped as soon as it is nobody's ancestor.
+//
+// Holding a reference to each one keeps Cesium from unloading content that is
+// still on screen. The set is rebuilt every update, so it never outgrows the
+// current selection.
+std::unordered_set<Cesium3DTilesSelection::Tile::ConstPointer> shellReferences;
+
+int32_t showAncestorShell(const Cesium3DTilesSelection::ViewUpdateResult& result) {
+    std::unordered_set<const Cesium3DTilesSelection::Tile *> shown;
+    for (const Cesium3DTilesSelection::Tile::ConstPointer& tile : result.tilesToRenderThisFrame) {
+        shown.insert(tile.get());
+    }
+    std::unordered_set<Cesium3DTilesSelection::Tile::ConstPointer> references;
+    int32_t shellSize = 0;
+    for (const Cesium3DTilesSelection::Tile::ConstPointer& tile : result.tilesToRenderThisFrame) {
+        for (const Cesium3DTilesSelection::Tile *walk = tile->getParent();
+             walk;
+             walk = walk->getParent()) {
+            // Everything above an ancestor already handled is handled too.
+            if (!shown.insert(walk).second) break;
+            const Cesium3DTilesSelection::TileRenderContent *content =
+                walk->getContent().getRenderContent();
+            auto *resources = content
+                ? static_cast<TileRenderResources *>(content->getRenderResources())
+                : nullptr;
+            // Structural nodes carry no geometry; keep walking past them.
+            if (!resources || !resources->identifier || resources->primitives.count == 0) continue;
+            references.insert(Cesium3DTilesSelection::Tile::ConstPointer(walk));
+            // Deliberately does not block retirement. The shell is insurance
+            // beneath the selected set, not part of it, and waiting on a coarse
+            // tile that is reloading would stall every retirement in the scene.
+            if (tileReady) tileReady(resources->identifier, resources->primitives);
+            ++shellSize;
+        }
+    }
+    shellReferences = std::move(references);
+    return shellSize;
+}
 
 CesiumGeospatial::LocalHorizontalCoordinateSystem makeRealityKitLocalFrame(
     const glm::dvec3& originEcef) {
@@ -490,9 +588,14 @@ public:
         return asyncSystem.createResolvedFuture(std::move(prepared));
     }
 
-    void* prepareInMainThread(Cesium3DTilesSelection::Tile& tile, void* loadThreadResources) override {
+    void* prepareInMainThread(Cesium3DTilesSelection::Tile&, void* loadThreadResources) override {
         auto *resources = static_cast<TileRenderResources *>(loadThreadResources);
-        resources->identifier = [NSString stringWithFormat:@"%p", &tile];
+        // A fresh id per prepared content, never the Tile's address. Cesium
+        // destroys and reallocates Tile objects constantly while flying into new
+        // ground, and a recycled address would alias two live tiles in the
+        // renderer's tables.
+        resources->identifier =
+            [NSString stringWithFormat:@"%llu", nextTileIdentifier++];
         return resources;
     }
     void free(Cesium3DTilesSelection::Tile&, void* loadThreadResources, void* mainThreadResources) noexcept override {
@@ -652,8 +755,12 @@ std::unique_ptr<Cesium3DTilesSelection::Tileset> tileset;
                 maximumCachedBytes:(int64_t)maximumCachedBytes
               lodTransitionsEnabled:(BOOL)lodTransitionsEnabled
           lodTransitionLengthSeconds:(float)lodTransitionLengthSeconds
+                     forbidTileHoles:(BOOL)forbidTileHoles
+           drawCoarseAncestorShell:(BOOL)drawCoarseAncestorShell
+       tileRetirementOverlapUpdates:(int32_t)tileRetirementOverlapUpdates
+      logTileRetirementDiagnostics:(BOOL)logTileRetirementDiagnostics
                      onTileVisible:(void (^)(NSString *tileIdentifier, NSArray<CesiumPrimitivePayload *> *primitives))onTileVisible
-                      onTileHidden:(void (^)(NSString *tileIdentifier))onTileHidden
+              onRenderSetComplete:(void (^)(void))onRenderSetComplete
                         onTileFreed:(void (^)(NSString *tileIdentifier))onTileFreed
               onAttributionChanged:(void (^)(NSString *attribution))onAttributionChanged {
     if (apiKey.length == 0) {
@@ -661,13 +768,16 @@ std::unique_ptr<Cesium3DTilesSelection::Tileset> tileset;
         return;
     }
     tileReady = [onTileVisible copy];
-    tileHidden = [onTileHidden copy];
+    renderSetComplete = [onRenderSetComplete copy];
     tileFreed = [onTileFreed copy];
     attributionChanged = [onAttributionChanged copy];
     lastAttribution.clear();
-    lodTransitionsAreEnabled = lodTransitionsEnabled;
-    pauseLodTransitionsForPendingInstall = false;
     realityKitInstalledTiles.clear();
+    requiredCompleteUpdates = std::max(tileRetirementOverlapUpdates, 1);
+    consecutiveCompleteUpdates = 0;
+    logRetirementDiagnostics = logTileRetirementDiagnostics;
+    drawAncestorShell = drawCoarseAncestorShell;
+    shellReferences.clear();
     Cesium3DTilesContent::registerAllTileContentTypes();
     Cesium3DTilesSelection::TilesetExternals externals{
         nullptr,
@@ -690,6 +800,12 @@ std::unique_ptr<Cesium3DTilesSelection::Tileset> tileset;
     // layered over Cesium's selection.
     options.maximumScreenSpaceError = std::max(maximumScreenSpaceError, 0.1);
     options.maximumCachedBytes = static_cast<int64_t>(std::max<int64_t>(maximumCachedBytes, 0));
+    // Cesium's own guarantee against holes: it refuses to refine a parent until
+    // every child is ready to render, so newly visible ground always has
+    // something, even if coarse, rather than briefly nothing. It is a no-op
+    // while enableLodTransitionPeriod is on, because that permanently forces
+    // enableFrustumCulling off and forbidHoles only acts on culled tiles.
+    options.forbidHoles = forbidTileHoles;
     options.enableLodTransitionPeriod = lodTransitionsEnabled;
     options.lodTransitionLength = std::max(lodTransitionLengthSeconds, 0.001f);
     options.kickDescendantsWhileFadingIn = true;
@@ -725,49 +841,107 @@ std::unique_ptr<Cesium3DTilesSelection::Tileset> tileset;
         1.57,
         1.22
     };
-    const float frameDelta = static_cast<float>(std::clamp(deltaTime, 0.0, 0.1));
-    // Cesium's transition clock normally starts as soon as content is selected,
-    // before Earthflight's asynchronous RealityKit mesh and texture creation has
-    // necessarily attached that content. Freeze transition progress until every
-    // currently selected replacement has confirmed installation, keeping its old
-    // LOD opaque rather than exposing the sky between the two renderer lifecycles.
-    const float transitionDelta =
-        lodTransitionsAreEnabled && pauseLodTransitionsForPendingInstall
-            ? 0.0f
-            : frameDelta;
     const Cesium3DTilesSelection::ViewUpdateResult& result =
         tileset->updateViewGroup(
             tileset->getDefaultViewGroup(),
             {view},
-            transitionDelta);
-    for (const Cesium3DTilesSelection::Tile::ConstPointer& tile : result.tilesFadingOut) {
-        const Cesium3DTilesSelection::TileRenderContent *content = tile->getContent().getRenderContent();
-        auto *resources = content ? static_cast<TileRenderResources *>(content->getRenderResources()) : nullptr;
-        if (!resources || !resources->identifier) continue;
-        if (!lodTransitionsAreEnabled) {
-            if (tileHidden) tileHidden(resources->identifier);
+            static_cast<float>(std::clamp(deltaTime, 0.0, 0.1)));
+
+    // Show every selected tile first, and note whether the whole set is present.
+    // Nothing is retired until it is.
+    //
+    // Cesium counts every tile in this list as covering its ground. Earthflight
+    // draws only those it has geometry for, so any selected tile it cannot draw
+    // is a hole, and retiring whatever that tile displaced exposes sky. Classify
+    // each one rather than skipping it silently, which is what hid this for so
+    // long: a tile with no render content set no flag and was never counted.
+    bool renderSetIsIncomplete = false;
+    int32_t tilesUnloaded = 0;
+    int32_t tilesExternal = 0;
+    int32_t tilesEmpty = 0;
+    int32_t tilesUnusable = 0;
+    int32_t tilesAwaitingInstall = 0;
+    for (const Cesium3DTilesSelection::Tile::ConstPointer& tile : result.tilesToRenderThisFrame) {
+        const Cesium3DTilesSelection::TileLoadState loadState = tile->getState();
+        if (loadState != Cesium3DTilesSelection::TileLoadState::Done &&
+            loadState != Cesium3DTilesSelection::TileLoadState::Failed) {
+            renderSetIsIncomplete = true;
+            ++tilesUnloaded;
             continue;
         }
-        // Keep the outgoing RealityKit container fully opaque for the complete
-        // overlap window. Partial hierarchy opacity exposes background geometry
-        // because the two LOD meshes have competing depth surfaces.
-        const float progress = std::clamp(content->getLodTransitionFadePercentage(), 0.0f, 1.0f);
-        if (progress >= 1.0f && tileHidden) {
-            tileHidden(resources->identifier);
+        if (tile->isEmptyContent()) {
+            // Covers nothing by design. Never a hole, never a reason to wait.
+            ++tilesEmpty;
+            continue;
         }
-    }
-    bool hasPendingRealityKitInstall = false;
-    for (const Cesium3DTilesSelection::Tile::ConstPointer& tile : result.tilesToRenderThisFrame) {
+        if (tile->isExternalContent()) {
+            // A structural node standing in for children that have not arrived.
+            // kickDescendantsAndRenderTile falls back to one of these once more
+            // than `loadingDescendantLimit` descendants are still loading, so it
+            // is a real hole, but a transient one: Cesium refines through it as
+            // soon as the children land.
+            renderSetIsIncomplete = true;
+            ++tilesExternal;
+            continue;
+        }
         const Cesium3DTilesSelection::TileRenderContent *content = tile->getContent().getRenderContent();
         auto *resources = content ? static_cast<TileRenderResources *>(content->getRenderResources()) : nullptr;
-        if (resources && resources->identifier && resources->primitives.count > 0 && tileReady) {
-            if (!realityKitInstalledTiles.contains(resources->identifier.UTF8String)) {
-                hasPendingRealityKitInstall = true;
-            }
-            tileReady(resources->identifier, resources->primitives);
+        if (!resources || !resources->identifier) {
+            // Content loaded but prepareInMainThread has not run, so there is
+            // not yet an identifier to install against.
+            renderSetIsIncomplete = true;
+            ++tilesUnloaded;
+            continue;
         }
+        if (resources->primitives.count == 0) {
+            // Nothing usable came out of the glTF. Waiting cannot help, so count
+            // it and carry on rather than jamming retirement for ever.
+            ++tilesUnusable;
+            continue;
+        }
+        if (!realityKitInstalledTiles.contains(resources->identifier.UTF8String)) {
+            renderSetIsIncomplete = true;
+            ++tilesAwaitingInstall;
+        }
+        if (tileReady) tileReady(resources->identifier, resources->primitives);
     }
-    pauseLodTransitionsForPendingInstall = hasPendingRealityKitInstall;
+
+    // Keep the coarse shell beneath the selected set before deciding what to
+    // retire, so the ancestors doing the covering count as selected this update.
+    const int32_t shellSize =
+        drawAncestorShell ? showAncestorShell(result) : 0;
+
+    // Retirement. The renderer knows which tiles it is drawing and which were
+    // selected just now, so it retires the difference itself. Deriving the
+    // outgoing set that way cannot miss a tile, which reading Cesium's
+    // tilesFadingOut can: that list reports a tile only on the single frame its
+    // overlap window elapses, and a tile it stops reporting stays on screen
+    // with nothing left to take it away except an eventual free.
+    //
+    // The gate stays. Cesium calls a tile renderable as soon as
+    // prepareInMainThread returns, but Earthflight's RealityKit mesh and
+    // texture creation finishes several frames later, so retire only once every
+    // selected tile is genuinely installed, for `requiredCompleteUpdates`
+    // consecutive updates. That is the whole overlap contract; Cesium's own
+    // fade window is no longer part of it.
+    consecutiveCompleteUpdates =
+        renderSetIsIncomplete ? 0 : consecutiveCompleteUpdates + 1;
+    const bool retiring =
+        consecutiveCompleteUpdates >= requiredCompleteUpdates && renderSetComplete;
+    if (logRetirementDiagnostics) {
+        logRetirement(
+            static_cast<int32_t>(result.tilesToRenderThisFrame.size()),
+            tilesUnloaded,
+            tilesExternal,
+            tilesEmpty,
+            tilesUnusable,
+            tilesAwaitingInstall,
+            shellSize,
+            retiring);
+    }
+    if (retiring) {
+        renderSetComplete();
+    }
     if (creditSystem && attributionChanged) {
         const CesiumUtility::CreditsSnapshot& snapshot = creditSystem->getSnapshot();
         std::string currentAttribution;

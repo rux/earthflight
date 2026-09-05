@@ -46,8 +46,12 @@ NS_ASSUME_NONNULL_BEGIN
                 maximumCachedBytes:(int64_t)maximumCachedBytes
               lodTransitionsEnabled:(BOOL)lodTransitionsEnabled
           lodTransitionLengthSeconds:(float)lodTransitionLengthSeconds
+                     forbidTileHoles:(BOOL)forbidTileHoles
+           drawCoarseAncestorShell:(BOOL)drawCoarseAncestorShell
+       tileRetirementOverlapUpdates:(int32_t)tileRetirementOverlapUpdates
+      logTileRetirementDiagnostics:(BOOL)logTileRetirementDiagnostics
                      onTileVisible:(void (^)(NSString *tileIdentifier, NSArray<CesiumPrimitivePayload *> *primitives))onTileVisible
-                      onTileHidden:(void (^)(NSString *tileIdentifier))onTileHidden
+              onRenderSetComplete:(void (^)(void))onRenderSetComplete
                         onTileFreed:(void (^)(NSString *tileIdentifier))onTileFreed
               onAttributionChanged:(void (^)(NSString *attribution))onAttributionChanged;
 + (void)updateTilesWithEcefCameraPositionX:(double)positionX

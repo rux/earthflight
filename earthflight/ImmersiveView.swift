@@ -37,11 +37,15 @@ struct ImmersiveView: View {
                 maximumCachedBytes: EarthflightTuning.maximumCachedBytes,
                 lodTransitionsEnabled: EarthflightTuning.lodTransitionsEnabled,
                 lodTransitionLengthSeconds: EarthflightTuning.lodTransitionLengthSeconds,
+                forbidTileHoles: EarthflightTuning.forbidTileHoles,
+                drawCoarseAncestorShell: EarthflightTuning.drawCoarseAncestorShell,
+                tileRetirementOverlapUpdates: EarthflightTuning.tileRetirementOverlapUpdates,
+                logTileRetirementDiagnostics: EarthflightTuning.logTileRetirementDiagnostics,
                 onTileVisible: { tileIdentifier, primitives in
                     googleRenderer.show(primitives: primitives, for: tileIdentifier)
                 },
-                onTileHidden: { tileIdentifier in
-                    googleRenderer.hide(tileIdentifier: tileIdentifier)
+                onRenderSetComplete: {
+                    googleRenderer.retireTilesNotSelectedThisUpdate()
                 },
                 onTileFreed: { tileIdentifier in
                     googleRenderer.remove(tileIdentifier: tileIdentifier)
@@ -121,6 +125,7 @@ struct ImmersiveView: View {
                     ecefCameraDirection
                 ecefCameraUp = simd_normalize(ecefCameraUp)
 
+                googleRenderer.beginUpdate()
                 CesiumBridge.updateTiles(
                     withEcefCameraPositionX: ecefCameraPosition.x,
                     positionY: ecefCameraPosition.y,
@@ -173,6 +178,11 @@ struct ImmersiveView: View {
             format: rendererFormat
         )
         let image = renderer.image { context in
+            if EarthflightTuning.useDiagnosticSkyColour {
+                UIColor.magenta.setFill()
+                context.fill(CGRect(x: 0, y: 0, width: 32, height: 512))
+                return
+            }
             let zenith = UIColor(red: 0.06, green: 0.32, blue: 0.68, alpha: 1).cgColor
             let softSky = UIColor(red: 0.32, green: 0.64, blue: 0.88, alpha: 1).cgColor
             let warmHorizon = UIColor(red: 0.74, green: 0.84, blue: 0.91, alpha: 1).cgColor

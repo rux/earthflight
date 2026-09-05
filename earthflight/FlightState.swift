@@ -179,6 +179,17 @@ final class FlightState {
         renderLocalFromEcef * ecefFromCraftLocalHorizontal * localHorizontalFromCraft
     }
 
+    /// Render-local orientation of the craft's current geodetic tangent frame,
+    /// with no attitude term. The render-local frame's own axes are fixed at
+    /// whatever point last set the render origin (launch, jump or rebase), so
+    /// they only match current geodetic up there; up to the 50 km rebase
+    /// distance away they can differ by about 0.45 degrees. Anything that wants
+    /// current geodetic up rather than origin-geodetic up, such as the sky
+    /// dome's zenith axis, needs this rotation and not `renderLocalFromEcef` alone.
+    var renderLocalFromCraftTangent: simd_double4x4 {
+        renderLocalFromEcef * ecefFromCraftLocalHorizontal
+    }
+
     func keepAlive(_ subscription: EventSubscription) {
         updateSubscription = subscription
     }
@@ -492,5 +503,17 @@ final class FlightState {
             }
         }
         return result
+    }
+
+    /// Rotation part of a rigid Double transform, as a Float quaternion. Shared
+    /// by the sky dome, which orients itself to current geodetic up, and the
+    /// star field, which cancels the render frame's rotation to stay ECEF-fixed.
+    nonisolated static func orientation(_ matrix: simd_double4x4) -> simd_quatf {
+        let float = realityKitMatrix(matrix)
+        return simd_quatf(simd_float3x3(
+            SIMD3(float.columns.0.x, float.columns.0.y, float.columns.0.z),
+            SIMD3(float.columns.1.x, float.columns.1.y, float.columns.1.z),
+            SIMD3(float.columns.2.x, float.columns.2.y, float.columns.2.z)
+        ))
     }
 }

@@ -677,6 +677,69 @@ struct EarthflightTests {
         #expect(simd_length(earthDirections[0] - earthDirections[1]) < 1e-5)
     }
 
+    @Test("Sky orientation tracks current geodetic up, and stars stay anchored under it, across render frames 50 km apart")
+    @MainActor
+    func skyOrientationTracksGeodeticUpAcrossRenderFrames() {
+        // Same craft, same instant, two different render origins: one at the
+        // craft itself, as just after a rebase, and one about 50 km away, as
+        // just before the next rebase fires. The render-local frame's own axes
+        // differ between the two, but the craft's true geodetic up does not,
+        // and neither should the sky's zenith axis or an Earth-anchored star.
+        let craftEcef = FlightState.ecefPosition(
+            longitudeDegrees: -0.1278,
+            latitudeDegrees: 51.5074,
+            ellipsoidHeightMeters: 5_000
+        )
+        let craftTangent = EarthflightLocalFrame(originEcef: craftEcef)
+        let farOriginEcef = FlightState.ecefPosition(
+            longitudeDegrees: -0.1278,
+            latitudeDegrees: 51.0,
+            ellipsoidHeightMeters: 5_000
+        )
+        #expect(simd_length(farOriginEcef - craftEcef) > 45_000)
+        #expect(simd_length(farOriginEcef - craftEcef) < 65_000)
+        let frames = [
+            EarthflightLocalFrame(originEcef: craftEcef),
+            EarthflightLocalFrame(originEcef: farOriginEcef)
+        ]
+
+        let expectedUpInEcef = SIMD3<Float>(
+            Float(craftTangent.ecefFromLocal.columns.1.x),
+            Float(craftTangent.ecefFromLocal.columns.1.y),
+            Float(craftTangent.ecefFromLocal.columns.1.z)
+        )
+        let starDirection = simd_normalize(SIMD3<Float>(0.3, 0.6, -0.74))
+
+        let skyZenithsInEcef = frames.map { frame -> SIMD3<Float> in
+            let renderLocalFromCraftTangent = frame.localFromEcef * craftTangent.ecefFromLocal
+            let skyOrientation = FlightState.orientation(renderLocalFromCraftTangent)
+            let ecefFromRenderLocal = FlightState.realityKitMatrix(frame.ecefFromLocal)
+            let zenithInRenderLocal = skyOrientation.act(SIMD3<Float>(0, 1, 0))
+            let inEcef = ecefFromRenderLocal * SIMD4<Float>(zenithInRenderLocal, 0)
+            return SIMD3(inEcef.x, inEcef.y, inEcef.z)
+        }
+        #expect(simd_length(skyZenithsInEcef[0] - expectedUpInEcef) < 1e-5)
+        #expect(simd_length(skyZenithsInEcef[0] - skyZenithsInEcef[1]) < 1e-5)
+
+        // The same composition `StarField.update` performs: cancel the render
+        // frame's rotation to reach ECEF, then cancel the sky parent's own new
+        // rotation to current geodetic up, or the star would be carried by it
+        // a second time on top of the render frame's rotation.
+        let starDirectionsInEcef = frames.map { frame -> SIMD3<Float> in
+            let renderLocalFromCraftTangent = frame.localFromEcef * craftTangent.ecefFromLocal
+            let skyOrientation = FlightState.orientation(renderLocalFromCraftTangent)
+            let starOrientation = skyOrientation.inverse * StarField.earthAnchoredOrientation(
+                renderLocalFromEcef: frame.localFromEcef
+            )
+            let ecefFromRenderLocal = FlightState.realityKitMatrix(frame.ecefFromLocal)
+            let starInRenderLocal = skyOrientation.act(starOrientation.act(starDirection))
+            let inEcef = ecefFromRenderLocal * SIMD4<Float>(starInRenderLocal, 0)
+            return SIMD3(inEcef.x, inEcef.y, inEcef.z)
+        }
+        #expect(simd_length(starDirectionsInEcef[0] - starDirection) < 1e-5)
+        #expect(simd_length(starDirectionsInEcef[0] - starDirectionsInEcef[1]) < 1e-5)
+    }
+
     private func matrixDistance(_ lhs: simd_double4x4, _ rhs: simd_double4x4) -> Double {
         max(
             simd_length(lhs.columns.0 - rhs.columns.0),

@@ -11,9 +11,15 @@ import simd
 //
 //  * The field is anchored to ECEF rather than to the render frame. Render-local
 //    axes rotate as the craft flies and jump by up to half a degree at every
-//    50 km floating-origin rebase, which a symmetric sky gradient hides but a
-//    star field would not: the stars would visibly pop. Countering that rotation
-//    pins them to the Earth, the only fixed frame this application has.
+//    50 km floating-origin rebase. The sky gradient is symmetric only about its
+//    own up axis, so that rotation shifts it too, just too smoothly to notice;
+//    a field of pinpoint stars would visibly pop instead. Countering the
+//    rotation pins the stars to the Earth, the only fixed frame this
+//    application has. The sky dome itself now carries its own rotation, to
+//    current geodetic up rather than the render frame's fixed axes, so the
+//    star field's parent is no longer the identity it once was and the
+//    field's own orientation has to cancel that rotation too, or the stars
+//    would rotate twice.
 //  * Stars fade in with the same air mass that colours the sky. They are drowned
 //    at ground level and full by about 40 km, with no separate mode or trigger.
 //  * Twinkling is done in banks. The stars are split across several meshes whose
@@ -87,6 +93,7 @@ final class StarField {
     func update(
         ellipsoidHeightMeters: Double,
         renderLocalFromEcef: simd_double4x4,
+        skyOrientation: simd_quatf,
         deltaTime: TimeInterval
     ) {
         let visibility = Self.visibility(ellipsoidHeightMeters: ellipsoidHeightMeters)
@@ -102,8 +109,11 @@ final class StarField {
 
         // render-local -> ECEF cancels the render frame's own rotation, so a
         // direction in bank-local space always means the same direction on the
-        // Earth. Scale set at construction survives writing orientation.
-        entity.orientation = Self.earthAnchoredOrientation(
+        // Earth. `skyOrientation.inverse` then cancels the parent dome's own
+        // rotation to current geodetic up, which would otherwise be applied a
+        // second time on top of this one. Scale set at construction survives
+        // writing orientation.
+        entity.orientation = skyOrientation.inverse * Self.earthAnchoredOrientation(
             renderLocalFromEcef: renderLocalFromEcef
         )
 
@@ -125,12 +135,7 @@ final class StarField {
     ) -> simd_quatf {
         // The matrix is rigid, so its upper 3x3 is a rotation and survives the
         // cast to Float orthonormal to well within a pixel at this radius.
-        let matrix = FlightState.realityKitMatrix(renderLocalFromEcef)
-        return simd_quatf(simd_float3x3(
-            SIMD3(matrix.columns.0.x, matrix.columns.0.y, matrix.columns.0.z),
-            SIMD3(matrix.columns.1.x, matrix.columns.1.y, matrix.columns.1.z),
-            SIMD3(matrix.columns.2.x, matrix.columns.2.y, matrix.columns.2.z)
-        ))
+        FlightState.orientation(renderLocalFromEcef)
     }
 
     /// A round dot with a soft shoulder, shared by every star. Written into the

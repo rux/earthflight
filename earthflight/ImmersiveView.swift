@@ -20,6 +20,7 @@ struct ImmersiveView: View {
             sky.update(
                 renderLocalPosition: state.position,
                 renderLocalFromEcef: state.renderLocalFromEcef,
+                renderLocalFromCraftTangent: state.renderLocalFromCraftTangent,
                 ellipsoidHeightMeters: state.ellipsoidHeightMeters,
                 deltaTime: 0
             )
@@ -90,6 +91,7 @@ struct ImmersiveView: View {
                 sky.update(
                     renderLocalPosition: state.position,
                     renderLocalFromEcef: state.renderLocalFromEcef,
+                    renderLocalFromCraftTangent: state.renderLocalFromCraftTangent,
                     ellipsoidHeightMeters: state.ellipsoidHeightMeters,
                     deltaTime: event.deltaTime
                 )

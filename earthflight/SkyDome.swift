@@ -19,6 +19,16 @@ import simd
 // that graze the Earth still cross a long dense path and keep the thin bright
 // rim seen from orbit. The horizon moves down the sky as the Earth shrinks
 // without anything computing where it is: rays simply start reaching the ground.
+//
+// The gradient's zenith axis (the sphere's local +Y, where the texture's V=0
+// row lands) has to track current geodetic up, not the render-local frame's
+// own Y axis. Those only coincide at the point that last set the render
+// origin (launch, jump or the last rebase); up to the 50 km rebase distance
+// away they differ by about 0.45 degrees, growing continuously and then
+// jumping back to zero at the next rebase. `SkyDome.update` corrects for this
+// by orienting the entity to `FlightState.renderLocalFromCraftTangent`, the
+// craft's current tangent frame expressed in render-local coordinates, which
+// depends only on the craft's position and not on its heading, pitch or roll.
 
 /// Geometry and density of the modelled atmosphere. These describe the world
 /// rather than taste, so they are not in `EarthflightTuning`.
@@ -401,16 +411,22 @@ final class SkyDome {
     func update(
         renderLocalPosition: SIMD3<Float>,
         renderLocalFromEcef: simd_double4x4,
+        renderLocalFromCraftTangent: simd_double4x4,
         ellipsoidHeightMeters: Double,
         deltaTime: TimeInterval
     ) {
         // The dome shares the Earth-root rotation but stays centred on the
-        // virtual craft in the current render frame.
+        // virtual craft in the current render frame. Its own orientation then
+        // points the gradient's zenith axis at current geodetic up rather than
+        // the render frame's fixed axes; see the type-level comment.
         entity.position = renderLocalPosition
+        let orientation = FlightState.orientation(renderLocalFromCraftTangent)
+        entity.orientation = orientation
         applyRadius(ellipsoidHeightMeters: ellipsoidHeightMeters)
         starField.update(
             ellipsoidHeightMeters: ellipsoidHeightMeters,
             renderLocalFromEcef: renderLocalFromEcef,
+            skyOrientation: orientation,
             deltaTime: deltaTime
         )
 

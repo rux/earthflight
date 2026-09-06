@@ -233,8 +233,13 @@ final class GoogleTileRenderer {
         // use on the M2 Vision Pro, even after a completed GPU copy proved its
         // pixels readable. The CGImage initializer presents correctly from its
         // first frame and also produced more natural colour on the same route.
+        //
+        // glTF defines base-colour texels as sRGB, so that is what these bytes
+        // are. Labelling them Display P3 told RealityKit to skip the gamut
+        // conversion it would otherwise apply, which stretched every saturated
+        // colour outwards towards the wider P3 primaries.
         guard let provider = CGDataProvider(data: rgba8 as CFData),
-              let colourSpace = CGColorSpace(name: CGColorSpace.displayP3),
+              let colourSpace = CGColorSpace(name: CGColorSpace.sRGB),
               let image = CGImage(
                 width: width,
                 height: height,

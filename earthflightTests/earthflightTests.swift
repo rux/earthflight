@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Metal
 import RealityKit
@@ -323,13 +324,18 @@ struct EarthflightTests {
         #expect(pitchedFlight.ellipsoidHeightMeters > pitchedStartHeight)
     }
 
-    @Test("Tile textures use the first-frame-safe CGImage upload without changing RGBA rows")
+    @Test("Tile textures upload as sRGB through the first-frame-safe CGImage path")
     @MainActor
     func tileTextureUploadContract() async throws {
         // Distinct corners catch channel swaps and vertical or horizontal flips.
+        // The fourth corner is a midtone rather than white: white and the fully
+        // saturated primaries are close to fixed points of the transfer curve
+        // and of a Display P3 gamut conversion, so on their own they cannot tell
+        // a correctly labelled source from a mislabelled one. A midtone moves
+        // under both.
         let rgba8 = Data([
             255, 0, 0, 255,      0, 255, 0, 255,
-            0, 0, 255, 255,      255, 255, 255, 255
+            0, 0, 255, 255,      128, 64, 32, 255
         ])
         let resource = try await GoogleTileRenderer.makeTexture(
             rgba8: rgba8,
@@ -360,7 +366,30 @@ struct EarthflightTests {
                 mipmapLevel: 0
             )
         }
-        #expect(copiedRGBA8 == Array(rgba8))
+
+        // RealityKit colour-manages the source image into Display P3, and
+        // `copy(to:)` samples the sRGB-encoded result, so these bytes are linear
+        // Display P3 rather than the bytes that went in. State the expectation
+        // in that destination space: byte identity would now mean RealityKit had
+        // been handed the wrong primaries and skipped the conversion, which is
+        // exactly the defect this pins. Core Graphics performs the same
+        // conversion, and agrees with RealityKit to within one level.
+        let sourceSpace = try #require(CGColorSpace(name: CGColorSpace.sRGB))
+        let readbackSpace = try #require(CGColorSpace(name: CGColorSpace.linearDisplayP3))
+        for pixel in 0..<4 {
+            let sourceComponents = (0..<3).map { CGFloat(rgba8[pixel * 4 + $0]) / 255 }
+            let expected = try #require(
+                CGColor(colorSpace: sourceSpace, components: sourceComponents + [1])?
+                    .converted(to: readbackSpace, intent: .defaultIntent, options: nil)?
+                    .components
+            )
+            for channel in 0..<3 {
+                let difference = CGFloat(copiedRGBA8[pixel * 4 + channel])
+                    - expected[channel] * 255
+                #expect(abs(difference) <= 2, "pixel \(pixel) channel \(channel)")
+            }
+            #expect(copiedRGBA8[pixel * 4 + 3] == 255)
+        }
     }
 
     @Test("glTF texture transforms are applied before RealityKit's V conversion")

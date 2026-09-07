@@ -456,10 +456,26 @@ final class SkyDome {
                 isRebuilding = false
                 return
             }
-            try? await texture.replace(
-                using: SkyGradient.image(pixels: pixels, rowCount: rowCount),
-                options: SkyGradient.textureCreateOptions
-            )
+            do {
+                try await texture.replace(
+                    using: SkyGradient.image(pixels: pixels, rowCount: rowCount),
+                    options: SkyGradient.textureCreateOptions
+                )
+            } catch {
+                // The old texture is still installed and still correct for
+                // builtHeightMeters, which is untouched below. A later frame's
+                // needsRebuild check will simply try again from the current height.
+                print("SkyDome: gradient upload failed at \(ellipsoidHeightMeters) m: \(error)")
+                isRebuilding = false
+                return
+            }
+            // The session may have ended while the upload itself was in flight;
+            // do not publish bookkeeping for a texture a later session's dome
+            // never asked for.
+            guard !Task.isCancelled else {
+                isRebuilding = false
+                return
+            }
             builtHeightMeters = ellipsoidHeightMeters
             isRebuilding = false
         }

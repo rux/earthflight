@@ -86,6 +86,14 @@ final class JumpTo {
         }
     }
 
+    /// Ends any in-flight capture/search/elevation work and returns to idle.
+    /// Cancelling `operationTask` unwinds `captureTranscript`'s task group,
+    /// which stops the audio tap and engine through its existing `defer`.
+    /// Safe to call when already idle.
+    func cancel() {
+        finish()
+    }
+
     func takePendingDestination() -> Destination? {
         guard let destination = pendingDestination else { return nil }
         pendingDestination = nil

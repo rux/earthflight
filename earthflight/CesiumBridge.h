@@ -63,6 +63,7 @@ NS_ASSUME_NONNULL_BEGIN
                                          upZ:(double)upZ
                                    deltaTime:(double)deltaTime;
 + (void)tileDidFinishPreparing:(NSString *)tileIdentifier succeeded:(BOOL)succeeded;
++ (void)stopTiles;
 
 @end
 

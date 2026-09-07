@@ -352,6 +352,7 @@ final class SkyDome {
     private let texture: TextureResource
     private var builtHeightMeters: Double
     private var isRebuilding = false
+    private var rebuildTask: Task<Void, Never>?
 
     init(ellipsoidHeightMeters: Double) async {
         starField = await StarField()
@@ -442,13 +443,19 @@ final class SkyDome {
             return
         }
         isRebuilding = true
-        Task {
+        rebuildTask = Task {
             let rowCount = EarthflightTuning.skyGradientRowCount
             // Marching 2,048 rays is milliseconds of pure arithmetic and depends
             // on nothing but the height, so keep it off the render actor.
             let pixels = await Task.detached(priority: .userInitiated) {
                 SkyGradient.pixels(heightMeters: ellipsoidHeightMeters, rowCount: rowCount)
             }.value
+            // A session end cancels this task before it touches the texture, so
+            // a later session's dome never receives a stale-height GPU upload.
+            guard !Task.isCancelled else {
+                isRebuilding = false
+                return
+            }
             try? await texture.replace(
                 using: SkyGradient.image(pixels: pixels, rowCount: rowCount),
                 options: SkyGradient.textureCreateOptions
@@ -456,5 +463,11 @@ final class SkyDome {
             builtHeightMeters = ellipsoidHeightMeters
             isRebuilding = false
         }
+    }
+
+    /// Cancels any in-flight gradient rebuild. Safe to call when idle or twice.
+    func stop() {
+        rebuildTask?.cancel()
+        rebuildTask = nil
     }
 }

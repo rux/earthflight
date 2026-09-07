@@ -1,5 +1,4 @@
 import Foundation
-import RealityKit
 import simd
 
 struct EarthflightLocalFrame {
@@ -83,8 +82,6 @@ final class FlightState {
     private var lastActiveVerticalInput: Float = 0
     private var wasVerticalInputActive = false
     private var verticalReleaseRemainingSeconds: Float = 0
-
-    private var updateSubscription: EventSubscription?
 
     init() {
         let craftEcef = Self.ecefPosition(
@@ -188,10 +185,6 @@ final class FlightState {
     /// dome's zenith axis, needs this rotation and not `renderLocalFromEcef` alone.
     var renderLocalFromCraftTangent: simd_double4x4 {
         renderLocalFromEcef * ecefFromCraftLocalHorizontal
-    }
-
-    func keepAlive(_ subscription: EventSubscription) {
-        updateSubscription = subscription
     }
 
     /// Puts every controller input at rest without touching position or attitude.

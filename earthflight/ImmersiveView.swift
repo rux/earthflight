@@ -9,6 +9,11 @@ struct ImmersiveView: View {
     @State private var headTracking = HeadTracking()
     @State private var jumpTo = JumpTo()
     @State private var attribution = ""
+    @State private var sky: SkyDome?
+    // Owned here rather than by FlightState: FlightState's own closure below
+    // captures `state` (itself) strongly, so FlightState retaining this token
+    // would be a self-referential retain cycle that no session end could break.
+    @State private var sceneUpdateSubscription: EventSubscription?
 
     var body: some View {
         RealityView { content, attachments in
@@ -17,6 +22,7 @@ struct ImmersiveView: View {
                 renderLocalFromEcef: state.renderLocalFromEcef
             )
             let sky = await SkyDome(ellipsoidHeightMeters: state.ellipsoidHeightMeters)
+            self.sky = sky
             sky.update(
                 renderLocalPosition: state.position,
                 renderLocalFromEcef: state.renderLocalFromEcef,
@@ -148,7 +154,7 @@ struct ImmersiveView: View {
                     deltaTime: event.deltaTime
                 )
             }
-            state.keepAlive(subscription)
+            sceneUpdateSubscription = subscription
         } attachments: {
             Attachment(id: "JumpToOverlay") {
                 VStack(spacing: 8) {
@@ -176,5 +182,24 @@ struct ImmersiveView: View {
             controller.start()
             await headTracking.start()
         }
+        .onDisappear {
+            endSession()
+        }
+    }
+
+    /// Ends the session deterministically instead of leaving it to whatever ARC
+    /// teardown order the previous scene's entities and closures happen to get.
+    /// visionOS calls this when the immersive space closes, for example the
+    /// Digital Crown, and it must leave nothing that could still call into a
+    /// later session's renderer, controller or head tracking. Every step here
+    /// is independently idempotent, so a second call does nothing further.
+    private func endSession() {
+        sceneUpdateSubscription = nil
+        switchController?.stop()
+        headTracking.stop()
+        jumpTo.cancel()
+        sky?.stop()
+        flightState.neutraliseInput()
+        CesiumBridge.stopTiles()
     }
 }

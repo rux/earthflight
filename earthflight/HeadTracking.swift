@@ -7,6 +7,7 @@ final class HeadTracking {
     private let session = ARKitSession()
     private let worldTracking = WorldTrackingProvider()
     private var lastValidWorldFromHead: simd_float4x4?
+    private var isStopped = false
 
     func start() async {
         guard WorldTrackingProvider.isSupported else {
@@ -19,6 +20,17 @@ final class HeadTracking {
         } catch {
             print("World tracking failed to start: \(error)")
         }
+    }
+
+    /// Ends this session's head tracking for good; `ARKitSession` cannot be
+    /// restarted, so a later session creates a fresh `HeadTracking`. Also drops
+    /// the cached pose so a stray call afterward reports nothing rather than
+    /// the last head position this session observed.
+    func stop() {
+        guard !isStopped else { return }
+        isStopped = true
+        session.stop()
+        lastValidWorldFromHead = nil
     }
 
     func currentWorldFromHead() -> simd_float4x4? {

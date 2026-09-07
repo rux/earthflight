@@ -228,7 +228,13 @@ glm::dvec2 realityKitTextureCoordinate(const glm::dvec2& gltfTextureCoordinate) 
 }
 
 std::shared_ptr<spdlog::logger> makeSanitizedCesiumLogger() {
-    auto logger = spdlog::callback_logger_mt("EarthflightCesium", [](const spdlog::details::log_msg& message) {
+    // Built directly rather than through spdlog::callback_logger_mt, which
+    // registers the logger under its name in spdlog's global registry and
+    // throws if that name is already taken. A closed-then-reopened session
+    // calls this again with the same name, so an unregistered logger is what
+    // lets a later session start without the registry rejecting it.
+    auto sink = std::make_shared<spdlog::sinks::callback_sink_mt>(
+        [](const spdlog::details::log_msg& message) {
         std::string text(message.payload.data(), message.payload.size());
         size_t key = text.find("key=");
         while (key != std::string::npos) {
@@ -246,6 +252,7 @@ std::shared_ptr<spdlog::logger> makeSanitizedCesiumLogger() {
         }
         NSLog(@"Cesium: %@", [NSString stringWithUTF8String:text.c_str()]);
     });
+    auto logger = std::make_shared<spdlog::logger>("EarthflightCesium", sink);
     logger->set_level(spdlog::level::warn);
     return logger;
 }
@@ -573,6 +580,7 @@ public:
     }
     void free(Cesium3DTilesSelection::Tile&, void* loadThreadResources, void* mainThreadResources) noexcept override {
         auto *resources = static_cast<TileRenderResources *>(mainThreadResources ?: loadThreadResources);
+        if (!resources) return;
         NSString *identifier = resources->identifier;
         if (identifier && tileFreed) {
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -879,6 +887,47 @@ std::unique_ptr<Cesium3DTilesSelection::Tileset> tileset;
 
 + (void)tileDidFinishPreparing:(NSString *)tileIdentifier succeeded:(BOOL)succeeded {
     finishRendererPreparation(tileIdentifier, succeeded);
+}
+
++ (void)stopTiles {
+    if (!tileset) return;
+
+    // Settle every outstanding renderer-preparation promise while the tileset,
+    // and the Tiles whose futures they resolve, are still alive. Cesium's
+    // asynchronous destruction contract is Cesium's own to honour once the
+    // tileset is destroyed below; Earthflight's obligation is not to abandon
+    // promises it created itself. A `tileDidFinishPreparing` that arrives later
+    // for one of these identifiers finds nothing in the map and is a no-op.
+    std::vector<std::shared_ptr<PendingRendererPreparation>> pending;
+    {
+        std::lock_guard<std::mutex> lock(pendingRendererPreparationsMutex);
+        pending.reserve(pendingRendererPreparations.size());
+        for (auto &entry : pendingRendererPreparations) {
+            pending.push_back(std::move(entry.second));
+        }
+        pendingRendererPreparations.clear();
+    }
+    for (const auto &preparation : pending) {
+        delete preparation->resources;
+        preparation->result.state = Cesium3DTilesSelection::TileLoadResultState::Failed;
+        preparation->promise.resolve({std::move(preparation->result), nullptr});
+    }
+
+    // Clear the Swift-facing callbacks before destroying the tileset, so any
+    // teardown work Cesium schedules (for example a resident tile's `free`)
+    // cannot reach a renderer a later session did not install them for.
+    tilePreparationRequested = nil;
+    tileReady = nil;
+    renderSetComplete = nil;
+    tileFreed = nil;
+    attributionChanged = nil;
+
+    // Destroying the tileset relies on Cesium's own pinned asynchronous
+    // destruction contract to cancel or complete its internal in-flight work.
+    // Earthflight does not add a blocking wait of its own on top of that.
+    tileset.reset();
+    creditSystem.reset();
+    lastAttribution.clear();
 }
 
 @end

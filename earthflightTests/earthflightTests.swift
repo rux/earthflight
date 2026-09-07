@@ -113,6 +113,53 @@ struct EarthflightTests {
         #expect(simd_length(up - SIMD3<Float>(0, 1, 0)) < 0.0001)
     }
 
+    @Test("Neutralised input stops the craft without moving or turning it")
+    @MainActor
+    func neutralisedInputStopsTheCraftInPlace() {
+        let flightState = FlightState()
+        flightState.leftStick = [0.7, 1]
+        flightState.rightStick = [0.4, -0.3]
+        flightState.isAscending = true
+        flightState.isVerticalBoosting = true
+        flightState.isBoosting = true
+        flightState.isRollingRight = true
+        flightState.advance(deltaTime: 0.2)
+
+        let positionAtDisconnect = flightState.craftEcefPosition
+        let orientationAtDisconnect = flightState.orientation
+
+        flightState.neutraliseInput()
+
+        #expect(flightState.leftStick == .zero)
+        #expect(flightState.rightStick == .zero)
+        #expect(!flightState.isAscending)
+        #expect(!flightState.isDescending)
+        #expect(!flightState.isRollingLeft)
+        #expect(!flightState.isRollingRight)
+        #expect(!flightState.isBoosting)
+        #expect(!flightState.isVerticalBoosting)
+        #expect(simd_distance(flightState.craftEcefPosition, positionAtDisconnect) < 1e-4)
+
+        // Without clearing the release tails, the last reported stick and vertical
+        // values would keep coasting the craft for movementReleaseDurationSeconds
+        // after the controller vanished. Cover more than that whole window.
+        let frameDuration = 1.0 / 30.0
+        let frameCount = Int(
+            (Double(EarthflightTuning.movementReleaseDurationSeconds) * 2) / frameDuration
+        )
+        for _ in 0..<frameCount {
+            flightState.advance(deltaTime: frameDuration)
+            #expect(simd_distance(flightState.craftEcefPosition, positionAtDisconnect) < 1e-4)
+        }
+
+        let forward = flightState.orientation.act(SIMD3<Float>(0, 0, -1))
+        let right = flightState.orientation.act(SIMD3<Float>(1, 0, 0))
+        let up = flightState.orientation.act(SIMD3<Float>(0, 1, 0))
+        #expect(simd_length(forward - orientationAtDisconnect.act(SIMD3<Float>(0, 0, -1))) < 0.0001)
+        #expect(simd_length(right - orientationAtDisconnect.act(SIMD3<Float>(1, 0, 0))) < 0.0001)
+        #expect(simd_length(up - orientationAtDisconnect.act(SIMD3<Float>(0, 1, 0))) < 0.0001)
+    }
+
     @Test("The app launches directly into full immersion with an extended gamepad")
     func immersiveLaunchConfiguration() {
         let sceneManifest = Bundle.main.object(

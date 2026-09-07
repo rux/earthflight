@@ -194,6 +194,21 @@ final class FlightState {
         updateSubscription = subscription
     }
 
+    /// Puts every controller input at rest without touching position or attitude.
+    /// A controller that has gone away can no longer report a release, so its last
+    /// values, and the release tails they would arm, must be dropped outright.
+    func neutraliseInput() {
+        leftStick = .zero
+        rightStick = .zero
+        isAscending = false
+        isDescending = false
+        isRollingLeft = false
+        isRollingRight = false
+        isBoosting = false
+        isVerticalBoosting = false
+        clearMovementRelease()
+    }
+
     // Physical right-stick click restores launch attitude while preserving the
     // sole global position and all movement input state.
     func resetView() {

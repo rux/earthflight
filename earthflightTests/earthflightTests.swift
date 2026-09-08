@@ -596,6 +596,69 @@ struct EarthflightTests {
         #expect(SkyDome.radiusMeters(ellipsoidHeightMeters: farHeight) > farHorizonDistance)
     }
 
+    @Test("Closed-form zenith air mass matches the march and falls off monotonically")
+    func zenithAirMassClosedForm() {
+        // `SkyAtmosphere.zenithAirMass` replaces the general 64-sample march for
+        // the one case `StarField.visibility` actually needs, a straight-up ray.
+        // It is exact for that ray (altitude grows linearly with distance
+        // travelled, so the exponential-density integral has a closed
+        // antiderivative); the march only disagrees by its own finite-sample
+        // quadrature error, which is largest near sea level (about 0.002 of one
+        // vertical column, confirmed against a standalone integration of the
+        // same march here) and shrinks quickly above it. An independent audit
+        // swept the whole height range on the 0-1 star-visibility scale, where
+        // the fade already compresses that error, and found at most about
+        // 0.000566, at around 15 km where the fade curve is steepest. 3e-3 on
+        // raw air mass and 1e-3 on visibility both leave headroom over their
+        // measured worst case without hiding a real regression.
+        let heights = [
+            -1_000.0,
+            0.0,
+            1.0,
+            100.0,
+            1_000.0,
+            8_500.0,
+            20_000.0,
+            50_000.0,
+            100_000.0,
+            119_000.0,
+            SkyAtmosphere.atmosphereTopMeters,
+            EarthflightTuning.maximumEllipsoidHeightMeters
+        ]
+        var previousAirMass = Double.infinity
+        for height in heights {
+            let closedForm = SkyAtmosphere.zenithAirMass(heightMeters: height)
+            let marched = SkyAtmosphere.ray(
+                heightMeters: height,
+                zenithAngleRadians: 0
+            ).relativeAirMass
+            #expect(abs(closedForm - marched) < 3e-3)
+
+            let closedFormVisibility = exp(-closedForm / EarthflightTuning.starZenithAirMassFade)
+            let marchedVisibility = exp(-marched / EarthflightTuning.starZenithAirMassFade)
+            #expect(abs(closedFormVisibility - marchedVisibility) < 1e-3)
+
+            // Air mass never increases with height, including across the top of
+            // the modelled atmosphere and the flight ceiling far beyond it.
+            #expect(closedForm <= previousAirMass + 1e-12)
+            previousAirMass = closedForm
+        }
+
+        // At and past the modelled top there is nothing left to scatter.
+        #expect(SkyAtmosphere.zenithAirMass(heightMeters: SkyAtmosphere.atmosphereTopMeters) == 0)
+        #expect(
+            SkyAtmosphere.zenithAirMass(
+                heightMeters: EarthflightTuning.maximumEllipsoidHeightMeters
+            ) == 0
+        )
+
+        // Negative height clamps to the same 1 m floor the march itself uses.
+        #expect(
+            SkyAtmosphere.zenithAirMass(heightMeters: -1_000) ==
+                SkyAtmosphere.zenithAirMass(heightMeters: 1)
+        )
+    }
+
     @Test("A pitched-over full stick climbs fast but cannot fly out of the world")
     @MainActor
     func pitchedClimbStaysBounded() {

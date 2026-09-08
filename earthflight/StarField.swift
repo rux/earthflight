@@ -83,10 +83,7 @@ final class StarField {
     /// 30 km, effectively nothing past the Karman line. Stars start to show at
     /// around 15 km and are full by 40 km.
     nonisolated static func visibility(ellipsoidHeightMeters: Double) -> Double {
-        let zenithAirMass = SkyAtmosphere.ray(
-            heightMeters: ellipsoidHeightMeters,
-            zenithAngleRadians: 0
-        ).relativeAirMass
+        let zenithAirMass = SkyAtmosphere.zenithAirMass(heightMeters: ellipsoidHeightMeters)
         return exp(-zenithAirMass / EarthflightTuning.starZenithAirMassFade)
     }
 

@@ -149,6 +149,25 @@ nonisolated enum SkyAtmosphere {
             parameter * parameter +
             2 * parameter * eyeRadius * cosine).squareRoot()
     }
+
+    /// Closed form of `ray(heightMeters:zenithAngleRadians: 0).relativeAirMass`.
+    /// A vertical ray's altitude increases linearly with distance travelled, so
+    /// the exponential-density integral from the eye to the atmosphere top has
+    /// an exact antiderivative and needs no march:
+    ///
+    /// airMass = exp(-h/H) * (1 - exp(-(T-h)/H))
+    ///
+    /// Use this wherever only the straight-up air mass is wanted. It is not a
+    /// replacement for `ray`, which still handles every other angle, the
+    /// ground/space branch and all artistic tuning.
+    static func zenithAirMass(heightMeters: Double) -> Double {
+        let height = max(heightMeters, 1)
+        guard height < atmosphereTopMeters else {
+            return 0
+        }
+        return exp(-height / densityScaleHeightMeters) *
+            -expm1(-(atmosphereTopMeters - height) / densityScaleHeightMeters)
+    }
 }
 
 /// The pure part of the sky: air mass and the palette in, texture pixels out.

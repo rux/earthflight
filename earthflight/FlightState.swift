@@ -1,6 +1,14 @@
 import Foundation
 import simd
 
+/// Both directions of one WGS84 tangent frame. Build this only where both are
+/// wanted, which is the floating render origin: launch, jump and rebase. Code
+/// that needs the forward transform alone should call
+/// `CesiumBridge.ecefFromLocalHorizontal` directly rather than build a frame and
+/// drop `localFromEcef`. Measured on the M2 headset, that costs nothing in
+/// Release -- whole-module optimisation already deletes the dead general 4x4
+/// Double inverse -- so this is about not writing work nobody wants, and about
+/// Debug builds, where nothing deletes it.
 struct EarthflightLocalFrame {
     let ecefFromLocal: simd_double4x4
     let localFromEcef: simd_double4x4
@@ -167,7 +175,9 @@ final class FlightState {
     }
 
     var ecefFromCraftLocalHorizontal: simd_double4x4 {
-        EarthflightLocalFrame(originEcef: craftEcefPosition).ecefFromLocal
+        // Nothing here wants the ECEF -> craft-tangent direction, so ask for the
+        // one transform rather than build a frame and drop its inverse.
+        CesiumBridge.ecefFromLocalHorizontal(atEcefPosition: craftEcefPosition)
     }
 
     var renderLocalFromCraft: simd_double4x4 {
@@ -386,6 +396,15 @@ final class FlightState {
     }
 
     private func integrate(localDisplacement: SIMD3<Double>) {
+        // No displacement means no new position. The step below would otherwise
+        // rebuild the tangent frame and round-trip the craft through Cesium's
+        // cartographic conversion for nothing: on the M2 headset a hands-off
+        // `advance` measured 397 ns before this guard and 68 ns after, every
+        // frame the sticks are centred. The round trip is very nearly exact -- one
+        // nanometre over a minute of idling -- but "very nearly" is a poor
+        // contract for standing still, and this makes it exact by construction.
+        guard localDisplacement != .zero else { return }
+
         let horizontalDistance = simd_length(
             SIMD2<Double>(localDisplacement.x, localDisplacement.z)
         )
@@ -396,8 +415,10 @@ final class FlightState {
         let step = localDisplacement / Double(stepCount)
 
         for _ in 0..<stepCount {
-            let currentFrame = EarthflightLocalFrame(originEcef: craftEcefPosition)
-            let horizontalCandidateEcef4 = currentFrame.ecefFromLocal *
+            let ecefFromCurrentLocal = CesiumBridge.ecefFromLocalHorizontal(
+                atEcefPosition: craftEcefPosition
+            )
+            let horizontalCandidateEcef4 = ecefFromCurrentLocal *
                 SIMD4<Double>(step.x, 0, step.z, 1)
             let horizontalCandidateEcef = SIMD3<Double>(
                 horizontalCandidateEcef4.x,

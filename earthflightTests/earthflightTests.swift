@@ -160,6 +160,47 @@ struct EarthflightTests {
         #expect(simd_length(up - orientationAtDisconnect.act(SIMD3<Float>(0, 1, 0))) < 0.0001)
     }
 
+    @Test("Steering without translation input leaves the global position exactly unchanged")
+    @MainActor
+    func steeringAloneDoesNotMoveTheCraft() {
+        let flightState = FlightState()
+        let ecefAtRest = flightState.craftEcefPosition
+        let longitudeAtRest = flightState.longitudeDegrees
+        let latitudeAtRest = flightState.latitudeDegrees
+        let heightAtRest = flightState.ellipsoidHeightMeters
+
+        // Yaw, pitch and roll must still work while the craft holds its position.
+        flightState.rightStick = [0.6, -0.4]
+        flightState.isRollingRight = true
+        flightState.isBoosting = true
+        for _ in 0..<600 {
+            flightState.advance(deltaTime: 1.0 / 90.0)
+            // Exact, not near. `integrate` bypasses a zero displacement outright,
+            // so no ECEF -> cartographic -> ECEF round trip runs to perturb the
+            // position by the nanometre a minute of idling used to accumulate.
+            #expect(flightState.craftEcefPosition == ecefAtRest)
+            #expect(flightState.longitudeDegrees == longitudeAtRest)
+            #expect(flightState.latitudeDegrees == latitudeAtRest)
+            #expect(flightState.ellipsoidHeightMeters == heightAtRest)
+        }
+        #expect(flightState.orientation.act(SIMD3<Float>(0, 0, -1)).x != 0)
+
+        // A released stick decays to exactly zero, so the tail must settle rather
+        // than creep, and deliberate input must still move the craft afterwards.
+        flightState.leftStick = [0, 1]
+        flightState.advance(deltaTime: 1.0 / 90.0)
+        flightState.leftStick = .zero
+        for _ in 0..<120 {
+            flightState.advance(deltaTime: 1.0 / 90.0)
+        }
+        let ecefAfterRelease = flightState.craftEcefPosition
+        #expect(ecefAfterRelease != ecefAtRest)
+        for _ in 0..<120 {
+            flightState.advance(deltaTime: 1.0 / 90.0)
+            #expect(flightState.craftEcefPosition == ecefAfterRelease)
+        }
+    }
+
     @Test("The app launches directly into full immersion with an extended gamepad")
     func immersiveLaunchConfiguration() {
         let sceneManifest = Bundle.main.object(

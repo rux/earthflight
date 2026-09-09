@@ -34,6 +34,14 @@ nonisolated enum EarthflightTuning {
     // then bypasses all release-decay state and calculations.
     static let movementReleaseDurationSeconds: Float = 0.5
 
+    // The same linear decay on right-stick yaw and pitch, so steering eases out
+    // rather than stopping dead. It is deliberately much shorter than the
+    // movement tail: this one coasts the turn rate, and a long tail keeps
+    // rotating the whole view after the owner has stopped asking for it, which
+    // reads as overshoot rather than as weight. Button roll is not affected.
+    // Set to zero to disable the effect entirely, as above.
+    static let steeringReleaseDurationSeconds: Float = 0.15
+
     // Ascend/descend uses two stages. The existing low-altitude squared curve is
     // capped to preserve controllable city flight. Above the threshold, a second
     // squared term ramps rapidly, making kilometre-scale altitude changes practical.

@@ -21,6 +21,60 @@ struct EarthflightLocalFrame {
     }
 }
 
+/// Linear release decay for one two-axis stick: the live input while the stick is
+/// deflected, then a ramp from the strongest deliberate sample down to zero. Both
+/// sticks want exactly this, including the recentre-rebound guard below, so they
+/// share one implementation rather than keeping a copy each.
+private struct StickReleaseDecay {
+    private var strongestActiveInput = SIMD2<Float>(repeating: 0)
+    private var wasActive = false
+    private var remainingSeconds: Float = 0
+
+    mutating func adjusted(
+        input: SIMD2<Float>,
+        durationSeconds: Float,
+        deltaTime: Float
+    ) -> SIMD2<Float> {
+        if input != .zero {
+            // Any new input cancels an in-flight release before becoming the
+            // source gesture for the next distinct active-to-zero transition.
+            if !wasActive {
+                strongestActiveInput = input
+            } else {
+                // Physical testing showed Switch Pro recentering rebound as high
+                // as +0.62 after a -1.0 left strafe, far beyond the dead zone.
+                // Preserve the strongest deliberate sample on each axis rather
+                // than arming a wrong-direction decay from that spring rebound.
+                if abs(input.x) >= abs(strongestActiveInput.x) {
+                    strongestActiveInput.x = input.x
+                }
+                if abs(input.y) >= abs(strongestActiveInput.y) {
+                    strongestActiveInput.y = input.y
+                }
+            }
+            wasActive = true
+            remainingSeconds = 0
+            return input
+        }
+        if wasActive {
+            wasActive = false
+            remainingSeconds = durationSeconds
+        }
+        guard remainingSeconds > 0 else {
+            return .zero
+        }
+
+        remainingSeconds = max(0, remainingSeconds - deltaTime)
+        return strongestActiveInput * (remainingSeconds / durationSeconds)
+    }
+
+    mutating func clear() {
+        strongestActiveInput = .zero
+        wasActive = false
+        remainingSeconds = 0
+    }
+}
+
 @MainActor
 final class FlightState {
     static let launchLongitudeDegrees = -0.1278
@@ -84,9 +138,8 @@ final class FlightState {
     var isBoosting = false
     var isVerticalBoosting = false
 
-    private var strongestActiveLeftStick = SIMD2<Float>(repeating: 0)
-    private var wasLeftStickActive = false
-    private var leftStickReleaseRemainingSeconds: Float = 0
+    private var leftStickRelease = StickReleaseDecay()
+    private var rightStickRelease = StickReleaseDecay()
     private var lastActiveVerticalInput: Float = 0
     private var wasVerticalInputActive = false
     private var verticalReleaseRemainingSeconds: Float = 0
@@ -210,6 +263,7 @@ final class FlightState {
         isBoosting = false
         isVerticalBoosting = false
         clearMovementRelease()
+        rightStickRelease.clear()
     }
 
     // Physical right-stick click restores launch attitude while preserving the
@@ -218,6 +272,10 @@ final class FlightState {
         headingRadians = 0
         pitchRadians = 0
         rollRadians = 0
+        // A residual steering tail would immediately turn the craft back off the
+        // level attitude the reset just restored, so drop it here. Movement input
+        // and its own release tail are deliberately preserved.
+        rightStickRelease.clear()
         rebuildOrientation()
     }
 
@@ -252,7 +310,11 @@ final class FlightState {
         let movementLeftStick: SIMD2<Float>
         let verticalInput: Float
         if EarthflightTuning.movementReleaseDurationSeconds > 0 {
-            movementLeftStick = releaseAdjustedLeftStick(deltaTime: dt)
+            movementLeftStick = leftStickRelease.adjusted(
+                input: leftStick,
+                durationSeconds: EarthflightTuning.movementReleaseDurationSeconds,
+                deltaTime: dt
+            )
             verticalInput = releaseAdjustedVerticalInput(
                 rawInput: rawVerticalInput,
                 deltaTime: dt
@@ -262,10 +324,26 @@ final class FlightState {
             verticalInput = rawVerticalInput
         }
 
-        headingRadians -= rightStick.x * EarthflightTuning.yawRateRadiansPerSecond * dt
+        // The right stick decays the same way, but it steers rather than moves:
+        // what coasts is the turn rate, so the craft eases out of a yaw or pitch
+        // instead of stopping dead. Keep this duration well under the movement
+        // one; a long tail reads as the craft overshooting where it was aimed.
+        // Roll is on buttons and is deliberately left alone.
+        let steeringStick: SIMD2<Float>
+        if EarthflightTuning.steeringReleaseDurationSeconds > 0 {
+            steeringStick = rightStickRelease.adjusted(
+                input: rightStick,
+                durationSeconds: EarthflightTuning.steeringReleaseDurationSeconds,
+                deltaTime: dt
+            )
+        } else {
+            steeringStick = rightStick
+        }
+
+        headingRadians -= steeringStick.x * EarthflightTuning.yawRateRadiansPerSecond * dt
         // The verified Switch Pro Controller reports forward stick motion as
         // positive Y. Decreasing pitch pitches the craft nose down.
-        pitchRadians -= rightStick.y * EarthflightTuning.pitchRateRadiansPerSecond * dt
+        pitchRadians -= steeringStick.y * EarthflightTuning.pitchRateRadiansPerSecond * dt
         let rollInput: Float = (isRollingRight ? 1 : 0) - (isRollingLeft ? 1 : 0)
         rollRadians -= rollInput * EarthflightTuning.rollRateRadiansPerSecond * dt
 
@@ -317,41 +395,6 @@ final class FlightState {
         integrate(localDisplacement: attitudeMovement + geodeticVerticalMovement)
     }
 
-    private func releaseAdjustedLeftStick(deltaTime: Float) -> SIMD2<Float> {
-        let duration = EarthflightTuning.movementReleaseDurationSeconds
-        if leftStick != .zero {
-            // Any new input cancels an in-flight release before becoming the
-            // source gesture for the next distinct active-to-zero transition.
-            if !wasLeftStickActive {
-                strongestActiveLeftStick = leftStick
-            } else {
-                // Physical testing showed Switch Pro recentering rebound as high
-                // as +0.62 after a -1.0 left strafe, far beyond the dead zone.
-                // Preserve the strongest deliberate sample on each axis rather
-                // than arming a wrong-direction decay from that spring rebound.
-                if abs(leftStick.x) >= abs(strongestActiveLeftStick.x) {
-                    strongestActiveLeftStick.x = leftStick.x
-                }
-                if abs(leftStick.y) >= abs(strongestActiveLeftStick.y) {
-                    strongestActiveLeftStick.y = leftStick.y
-                }
-            }
-            wasLeftStickActive = true
-            leftStickReleaseRemainingSeconds = 0
-            return leftStick
-        }
-        if wasLeftStickActive {
-            wasLeftStickActive = false
-            leftStickReleaseRemainingSeconds = duration
-        }
-        guard leftStickReleaseRemainingSeconds > 0 else {
-            return .zero
-        }
-
-        leftStickReleaseRemainingSeconds = max(0, leftStickReleaseRemainingSeconds - deltaTime)
-        return strongestActiveLeftStick * (leftStickReleaseRemainingSeconds / duration)
-    }
-
     private func releaseAdjustedVerticalInput(
         rawInput: Float,
         deltaTime: Float
@@ -375,10 +418,11 @@ final class FlightState {
         return lastActiveVerticalInput * (verticalReleaseRemainingSeconds / duration)
     }
 
+    /// Movement only: the left stick and the vertical buttons. A right-stick
+    /// click resets attitude and clears the steering tail separately, because it
+    /// must not also cancel travel the owner is still asking for.
     private func clearMovementRelease() {
-        strongestActiveLeftStick = .zero
-        wasLeftStickActive = false
-        leftStickReleaseRemainingSeconds = 0
+        leftStickRelease.clear()
         lastActiveVerticalInput = 0
         wasVerticalInputActive = false
         verticalReleaseRemainingSeconds = 0

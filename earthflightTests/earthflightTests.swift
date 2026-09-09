@@ -201,6 +201,83 @@ struct EarthflightTests {
         }
     }
 
+    @Test("Released yaw and pitch coast briefly, then stop, and a view reset cancels the coast")
+    @MainActor
+    func steeringReleaseDecay() {
+        let duration = EarthflightTuning.steeringReleaseDurationSeconds
+        #expect(duration > 0)
+        let frameDuration = 1.0 / 90.0
+        let tailFrames = Int((Double(duration) / frameDuration).rounded(.up)) + 1
+
+        // Read heading and pitch back out of the craft basis rather than compare
+        // forward vectors with acos, which loses all precision next to zero angle.
+        func heading(_ flightState: FlightState) -> Float {
+            let forward = flightState.orientation.act(SIMD3<Float>(0, 0, -1))
+            return atan2(forward.x, -forward.z)
+        }
+        func pitch(_ flightState: FlightState) -> Float {
+            asin(min(1, max(-1, flightState.orientation.act(SIMD3<Float>(0, 0, -1)).y)))
+        }
+
+        let flightState = FlightState()
+        flightState.rightStick = [1, 0.5]
+        for _ in 0..<30 {
+            flightState.advance(deltaTime: frameDuration)
+        }
+        let headingBeforeLastHeldFrame = heading(flightState)
+        let pitchBeforeLastHeldFrame = pitch(flightState)
+        flightState.advance(deltaTime: frameDuration)
+        let headingPerHeldFrame = heading(flightState) - headingBeforeLastHeldFrame
+        let pitchPerHeldFrame = pitch(flightState) - pitchBeforeLastHeldFrame
+        #expect(headingPerHeldFrame != 0)
+        #expect(pitchPerHeldFrame != 0)
+
+        // Releasing coasts rather than stopping dead, and the first coasting frame
+        // is already turning less than the held stick was.
+        let headingAtRelease = heading(flightState)
+        let pitchAtRelease = pitch(flightState)
+        flightState.rightStick = .zero
+        flightState.advance(deltaTime: frameDuration)
+        let firstCoastFrame = heading(flightState) - headingAtRelease
+        #expect(firstCoastFrame / headingPerHeldFrame > 0)
+        #expect(abs(firstCoastFrame) < abs(headingPerHeldFrame))
+
+        // A linear ramp coasts half of what the held stick would have covered, so
+        // the whole tail stays well inside the same number of held frames.
+        for _ in 0..<tailFrames {
+            flightState.advance(deltaTime: frameDuration)
+        }
+        let headingCoast = heading(flightState) - headingAtRelease
+        let pitchCoast = pitch(flightState) - pitchAtRelease
+        #expect(abs(headingCoast) > abs(headingPerHeldFrame))
+        #expect(abs(headingCoast) < abs(headingPerHeldFrame) * Float(tailFrames) * 0.6)
+        #expect(abs(pitchCoast) > 0)
+        #expect(abs(pitchCoast) < abs(pitchPerHeldFrame) * Float(tailFrames) * 0.6)
+
+        // And then it is over: the tail reaches exactly zero rather than trailing off.
+        let settledHeading = heading(flightState)
+        let settledPitch = pitch(flightState)
+        for _ in 0..<120 {
+            flightState.advance(deltaTime: frameDuration)
+            #expect(heading(flightState) == settledHeading)
+            #expect(pitch(flightState) == settledPitch)
+        }
+
+        // A right-stick click levels the craft, so the tail must not turn it back.
+        let resetting = FlightState()
+        resetting.rightStick = [1, 0.5]
+        for _ in 0..<30 {
+            resetting.advance(deltaTime: frameDuration)
+        }
+        resetting.rightStick = .zero
+        resetting.resetView()
+        for _ in 0..<tailFrames {
+            resetting.advance(deltaTime: frameDuration)
+            #expect(heading(resetting) == 0)
+            #expect(pitch(resetting) == 0)
+        }
+    }
+
     @Test("The app launches directly into full immersion with an extended gamepad")
     func immersiveLaunchConfiguration() {
         let sceneManifest = Bundle.main.object(

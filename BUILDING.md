@@ -4,7 +4,7 @@ This file records a known-good physical-device Cesium Native build. It intention
 
 ## Current status
 
-The visionOS arm64 Cesium Native build links and runs on the original M2 Apple Vision Pro. It starts at a fixed central-London Google Photorealistic 3D Tiles view with correct geometry, textures, sampler behavior, tile replacement, and visible-tile attribution aggregation.
+The visionOS arm64 Cesium Native build links and runs on the original M2 Apple Vision Pro. It launches over central London into Google Photorealistic 3D Tiles with correct geometry, textures, sampler behaviour, tile replacement, and visible-tile attribution aggregation, and keeps them while the craft flies and jumps elsewhere.
 
 ## Known-good build record
 
@@ -12,13 +12,28 @@ The visionOS arm64 Cesium Native build links and runs on the original M2 Apple V
 |---|---|
 | Cesium Native commit | `80a22ff4337c5b7057cff53d0055045c15c6d350` (upstream v0.64.0) |
 | vcpkg commit | `56bb2411609227288b70117ead2c47585ba07713` |
-| Xcode version and build | Xcode 27.0 (`27A5252f`) |
-| visionOS SDK version | 27.0 (`XROS27.0.sdk`) |
+| Xcode version and build | Xcode 27.0 (`27A5252f`), a beta build |
+| visionOS SDK version and build | 27.0 (`XROS27.0.sdk`, `24M5357a`) |
 | Apple Clang version | 21.0.0 (`clang-2100.3.33.1`) |
 | visionOS deployment target | 27.0 |
+| Host macOS | 27.0 (`26A428`), release candidate |
+| Device visionOS | 27.0 (`24M362`), release candidate, on the paired Apple Vision Pro |
 | `DEVELOPER_DIR` resolved to | `/Applications/Xcode-beta.app/Contents/Developer` (the only full Xcode installation on this machine; see below for how this is chosen) |
 | Local patches | `patches/cesium-native-visionos.patch`; `patches/vcpkg-openssl-visionos.patch` |
 | Physical-device smoke test | Successful on original M2 Apple Vision Pro; fixed London tiles refined correctly and rendered without black or misassigned textures. |
+
+## The 10 September 2026 release-candidate OS update
+
+macOS and visionOS both moved to release-candidate builds — the host to 27.0 (`26A428`), the paired Apple Vision Pro to 27.0 (`24M362`). Xcode did not change: it is still the same beta `Xcode-beta.app`, Xcode 27.0 (`27A5252f`), carrying `XROS27.0.sdk` build `24M5357a` and `clang-2100.3.33.1`.
+
+Nothing the build manifest records as toolchain identity therefore changed, and the native archives built on 5 September 2026 remain the ones in use (`BUILT_AT=2026-09-05T14:36:08Z`). AGENTS.md "Toolchain transitions" asks for a native rebuild after an Xcode or SDK change; a device OS change alone is not one. The headset now runs a *newer* visionOS build than the SDK the app is compiled against, which is ordinary: the deployment target is 27.0 and visionOS keeps binary compatibility forward within a release.
+
+The macOS update did leave `xcode-select -p` pointing at `/Library/Developer/CommandLineTools`, so plain `xcodebuild` is no longer on `PATH`. `scripts/build-cesium-visionos.sh` run without `DEVELOPER_DIR` now falls through to its `/Applications` scan, finds exactly one full Xcode and proceeds after printing "No Xcode selected via xcode-select". The build command recorded in the next section sets `DEVELOPER_DIR` explicitly and does not depend on that; `sudo xcode-select -s /Applications/Xcode-beta.app` restores the selection if a bare `xcodebuild` is wanted.
+
+Verified on 10 September 2026, with no rebuild of the native dependencies:
+
+* the "Verify Cesium Native toolchain" build phase reports the manifest matching the active toolchain, so the app compiles and links against the 5 September archives unchanged;
+* `xcodebuild test` on the paired physical Apple Vision Pro, now on visionOS `24M362`, runs and passes all 28 cases in `earthflightTests`. The 21 recorded below are the count on 5 September; the sky, star-field and head-up display work has added cases since.
 
 ## Native build commands
 
@@ -28,7 +43,7 @@ From the repository root:
 DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer scripts/build-cesium-visionos.sh
 ```
 
-The script initializes the pinned submodules, applies both idempotent local patches, configures with Ninja, builds, and installs under the ignored `build/cesium-visionos/install` directory. It also produces `build/cesium-visionos/vcpkg_installed/arm64-visionos/lib/libEarthflightAbseil.a`; see below.
+The script initialises the pinned submodules, applies both idempotent local patches, configures with Ninja, builds, and installs under the ignored `build/cesium-visionos/install` directory. It also produces `build/cesium-visionos/vcpkg_installed/arm64-visionos/lib/libEarthflightAbseil.a`; see below.
 
 ## The `libEarthflightAbseil.a` archive
 
@@ -42,7 +57,7 @@ Verified on 5 September 2026 in an isolated scratch checkout — a clean `git cl
 
 * the merged archive holds exactly the 156 real object members and 2,307 defined global symbols present across all ninety-one source archives (`__.SYMDEF` table-of-contents entries excluded from both counts; duplicate object basenames across different abseil components, such as two unrelated files both named `usage.cc.o`, are expected and harmless);
 * `xcodebuild build` for `generic/platform=visionOS` succeeds in both Debug and Release, linking only libraries under the scratch checkout's own `build/` tree;
-* `xcodebuild test` on the paired physical Apple Vision Pro ``runs and passes all 21 cases in `earthflightTests`.
+* `xcodebuild test` on the paired physical Apple Vision Pro runs and passes all 21 cases in `earthflightTests`.
 
 Building for `platform=visionOS Simulator` fails at the link step against these libraries, because the native build script only ever configures the device `XROS.sdk` and the `arm64-visionos` vcpkg triplet. That is pre-existing and unrelated to the archive fix; the physical device remains the only buildable and testable destination.
 
@@ -61,7 +76,7 @@ Verified on 5 September 2026, on this machine (only `Xcode-beta.app` installed, 
 * an unchanged rerun of `scripts/build-cesium-visionos.sh` reports no mismatch and reproduces the same manifest, modulo `BUILT_AT`;
 * a manifest field edited to a stale value makes the script print the mismatch, discard only `build/cesium-visionos`, and rebuild — `build/vcpkg-downloads`, `build/vcpkg-binary-cache`, `build/vcpkg-cache` and `Secrets.xcconfig` were unaffected;
 * `xcodebuild build` for `generic/platform=visionOS` succeeds in both Debug and Release with a correct manifest, and fails clearly, with the precise rebuild command, when a manifest field is deliberately corrupted;
-* `xcodebuild test` on the paired physical Apple Vision Pro ``still runs and passes all 21 cases in `earthflightTests` afterwards.
+* `xcodebuild test` on the paired physical Apple Vision Pro still runs and passes all 21 cases in `earthflightTests` afterwards.
 
 ## Required CMake options
 

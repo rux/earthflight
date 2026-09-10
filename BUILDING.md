@@ -6,6 +6,8 @@ This file records a known-good physical-device Cesium Native build. It intention
 
 The visionOS arm64 Cesium Native build links and runs on the original M2 Apple Vision Pro. It launches over central London into Google Photorealistic 3D Tiles with correct geometry, textures, sampler behaviour, tile replacement, and visible-tile attribution aggregation, and keeps them while the craft flies and jumps elsewhere.
 
+Since 10 September 2026 the Swift code builds in **Swift 6 language mode**; see "The 10 September 2026 Swift 6 language-mode move" below for what that changed and what it caught.
+
 ## Known-good build record
 
 | Item | Value |
@@ -16,6 +18,7 @@ The visionOS arm64 Cesium Native build links and runs on the original M2 Apple V
 | visionOS SDK version and build | 27.0 (`XROS27.0.sdk`, `24M5357a`) |
 | Apple Clang version | 21.0.0 (`clang-2100.3.33.1`) |
 | visionOS deployment target | 27.0 |
+| Swift language mode | 6.0, `SWIFT_STRICT_CONCURRENCY = complete` (since 10 September 2026) |
 | Host macOS | 27.0 (`26A428`), release candidate |
 | Device visionOS | 27.0 (`24M362`), release candidate, on the paired Apple Vision Pro |
 | `DEVELOPER_DIR` resolved to | `/Applications/Xcode-beta.app/Contents/Developer` (the only full Xcode installation on this machine; see below for how this is chosen) |
@@ -34,6 +37,39 @@ Verified on 10 September 2026, with no rebuild of the native dependencies:
 
 * the "Verify Cesium Native toolchain" build phase reports the manifest matching the active toolchain, so the app compiles and links against the 5 September archives unchanged;
 * `xcodebuild test` on the paired physical Apple Vision Pro, now on visionOS `24M362`, runs and passes all 28 cases in `earthflightTests`. The 21 recorded below are the count on 5 September; the sky, star-field and head-up display work has added cases since.
+
+## The 10 September 2026 Swift 6 language-mode move
+
+`SWIFT_VERSION` went from `5.0` to `6.0` and `SWIFT_STRICT_CONCURRENCY = complete` was added, on all four configurations — the app and `earthflightTests`, Debug and Release. `SWIFT_APPROACHABLE_CONCURRENCY = YES` and the app target's `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` were already set and did not change.
+
+**No native rebuild was involved.** Xcode, the SDK, the compiler and both pinned source revisions are exactly as recorded above, so the "Verify Cesium Native toolchain" phase matched and the app compiled and linked against the 5 September archives unchanged. A language-mode change is not a toolchain transition.
+
+Verified on 10 September 2026:
+
+* `xcodebuild build` for `generic/platform=visionOS` succeeds in **both Debug and Release** with no Swift warnings. The only remaining compiler warnings are pre-existing: documentation warnings from Cesium's own headers, and `CesiumBridge.mm:319` `-Wunused-getter-return-value`. Both were present before the move; confirmed by rebuilding a stash of the pre-change tree.
+* `xcodebuild test` on the paired physical Apple Vision Pro runs and passes all 28 cases in `earthflightTests`.
+* The owner then confirmed on the headset that flight, tile streaming, the head-up display and its `-` toggle, the sky gradient, the star field, Jump To and on-device speech recognition all work. That is the first run to have exercised every visible subsystem in one sitting, so it also retires the "not seen on the headset" status lines the sky, star-field and head-up-display sections of AGENTS.md had carried.
+
+### The one thing it broke, and why that was the point
+
+The first headset run trapped the moment `+` was pressed, in libdispatch's `_dispatch_assert_queue_fail`:
+
+```text
+BUG IN CLIENT OF LIBDISPATCH: Assertion failed:
+Block was expected to execute on queue [com.apple.main-thread (...)]
+```
+
+The cause was `SFSpeechRecognizer.requestAuthorization`'s completion handler. `SFSpeechRecognizer.h` states that "the system does not guarantee the execution of this block on your app's main dispatch queue", and it does arrive on another one. Under `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` the handler closure is inferred `@MainActor`, and **Swift 6 emits a hard runtime check inside the bridged Objective-C block thunk where Swift 5 emitted none**. The handler itself was untouched by the migration; only enforcement changed. It is now a `nonisolated` helper, `JumpTo.speechAuthorizationStatus`.
+
+Confirmed by measurement rather than inference: compiling the same source at `-swift-version 5` and `-swift-version 6` yields one versus three `swift_task_isCurrentExecutor` call sites, and demangling the enclosing symbols pins the extra pair to that handler. AGENTS.md, "Swift 6: where every callback actually runs", holds the resulting rule, the per-callback contracts, and the recipe for sweeping the whole binary for the same fault.
+
+### `build-for-testing` in Release fails, and always has
+
+```text
+error: Unable to resolve Swift module dependency to a compatible module: 'earthflight'
+```
+
+`@testable import earthflight` cannot resolve because `ENABLE_TESTABILITY` is off in Release. Confirmed pre-existing by building a stash of the tree before the Swift 6 change. Tests run in Debug; do not chase this.
 
 ## Native build commands
 

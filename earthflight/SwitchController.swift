@@ -16,6 +16,12 @@ final class SwitchController {
     // dropped, which keeps neutralisation final and stops a stale input sticking
     // on. Counting bindings, rather than capturing the controller, keeps the
     // handlers free of any reference back to the object holding them.
+    //
+    // The element handlers installed below are inferred main-actor-isolated,
+    // and that matches the framework: GCDevice.h states that `handlerQueue`
+    // defaults to main, and this app never sets it. The deferral is therefore
+    // about ordering against a disconnect, not about reaching the main actor;
+    // it is accepted controller feel and must not be collapsed away.
     private var bindingGeneration = 0
     private var isLeftShoulderPressed = false
     private var isRightShoulderPressed = false
@@ -28,6 +34,19 @@ final class SwitchController {
         self.flightState = flightState
     }
 
+    // Both observer blocks are `@Sendable` and nonisolated: `NotificationCenter`
+    // declares them that way and offers no main-actor-isolated alternative, so
+    // Swift 6 will not let the notification's `GCController` cross from them
+    // into this main-actor type, and no supported annotation can promise that
+    // it may. `GCController.controllers()` is the main actor's own view of the
+    // same fact, and GCController.h asks callers to "adopt both" the array and
+    // the notifications, so the blocks carry nothing but the signal and the
+    // binding is reconciled against that array on this side of the boundary.
+    //
+    // `MainActor.assumeIsolated` is a checked assertion, not a suppression:
+    // `queue: .main` runs the block on the main thread, and a main-thread post
+    // is even delivered synchronously, so the reconcile keeps the timing the
+    // accepted build had rather than deferring it a turn through a `Task`.
     func start() {
         guard connectionObserver == nil else {
             return
@@ -37,27 +56,39 @@ final class SwitchController {
             forName: .GCControllerDidConnect,
             object: nil,
             queue: .main
-        ) { [weak self] notification in
-            guard let controller = notification.object as? GCController else {
-                return
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.reconcileBinding()
             }
-
-            self?.bind(controller)
         }
 
         disconnectionObserver = NotificationCenter.default.addObserver(
             forName: .GCControllerDidDisconnect,
             object: nil,
             queue: .main
-        ) { [weak self] notification in
-            guard let controller = notification.object as? GCController else {
-                return
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.reconcileBinding()
             }
-
-            self?.unbind(controller)
         }
 
-        for controller in GCController.controllers() {
+        reconcileBinding()
+    }
+
+    /// Makes the binding match the controllers GameController currently reports:
+    /// release one whose controller has gone, then bind the first extended
+    /// gamepad if nothing is bound. Releasing is still decided by identity --
+    /// `boundController` is compared against the live array, not against
+    /// whatever a notification happened to carry -- so another controller
+    /// disconnecting leaves this binding alone. Binding stays first-come, as it
+    /// was when the initial scan was the only caller.
+    private func reconcileBinding() {
+        let connectedControllers = GCController.controllers()
+        if let boundController,
+           !connectedControllers.contains(where: { $0 === boundController }) {
+            unbind()
+        }
+        for controller in connectedControllers {
             bind(controller)
         }
     }
@@ -73,9 +104,7 @@ final class SwitchController {
             NotificationCenter.default.removeObserver(disconnectionObserver)
         }
         disconnectionObserver = nil
-        if let boundController {
-            unbind(boundController)
-        }
+        unbind()
     }
 
     private func bind(_ controller: GCController) {
@@ -185,9 +214,10 @@ final class SwitchController {
 
     /// A disconnect leaves the craft wherever it was, pointing wherever it was,
     /// but with nothing pressed and nothing decaying, so it stops rather than
-    /// coasting on the last inputs a vanished controller reported.
-    private func unbind(_ controller: GCController) {
-        guard controller === boundController else {
+    /// coasting on the last inputs a vanished controller reported. Calling this
+    /// with nothing bound does nothing further.
+    private func unbind() {
+        guard let controller = boundController else {
             return
         }
 

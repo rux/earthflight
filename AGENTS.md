@@ -185,6 +185,8 @@ Do not begin with Metal or Compositor Services. RealityKit has already been demo
 
 No authored Reality Composer Pro scene or asset package is needed. The content is streamed and generated at runtime.
 
+The app and its test target build in **Swift 6 language mode** with `SWIFT_STRICT_CONCURRENCY = complete`, `SWIFT_APPROACHABLE_CONCURRENCY = YES` and `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`. Read "Swift 6: where every callback actually runs" below before adding any Objective-C or system callback; that combination makes a wrong main-actor claim a runtime trap rather than a silent race.
+
 ### Earth data
 
 Use Google Map Tiles API **Photorealistic 3D Tiles**.
@@ -247,6 +249,8 @@ toolchain to a release toolchain:
 6. update the recorded known-good Xcode, SDK, compiler and native-build details.
 
 Do not add compatibility layers for old beta toolchains. Support the currently installed authoritative toolchain.
+
+A Swift **language mode** change is not a toolchain transition and needs no native rebuild, but it does need its own physical smoke test: it can alter runtime behaviour without changing a line of Swift. Moving to Swift 6 turned a long-standing wrong main-actor inference in Jump To into a hard trap on the first press.
 
 ### Apple frameworks
 
@@ -786,7 +790,7 @@ The tiny mountainous adjacent-LOD boundary sliver is newly observed but not yet 
 
 #### HUD
 
-**Status: implemented on 10 September 2026 as a requested addition beyond the original brief. Builds clean in Debug and Release for `generic/platform=visionOS`, and the geometry is covered by one regression test. Nothing here has been seen on the physical headset.**
+**Status: implemented on 10 September 2026 as a requested addition beyond the original brief. Builds clean in Debug and Release for `generic/platform=visionOS`, and the geometry is covered by one regression test. The owner confirmed the display on the original M2 Vision Pro later the same day, including the `-` toggle, which settles the `buttonOptions` mapping this section had flagged as unverified. The numbered procedure below is kept as the way to re-check the marks after any change to attitude, placement or depth behaviour.**
 
 Two marks, in `HeadUpDisplay.swift`, that say where the craft is pointed and where level is: a ring on the nose axis, and a bar lying in the local horizontal plane with a gap the ring sits in. At launch the ring is inside the gap. Pitch the nose down and the ring goes down with it while the bar stays on the horizon; roll and the bar banks while the ring stays where it is. They exist so the owner can tell, without guessing, which way the left stick will move the craft.
 
@@ -797,7 +801,7 @@ Two marks, in `HeadUpDisplay.swift`, that say where the craft is pointed and whe
 * The marks are placed 1,000 metres away and sized in **angles, not metres**. The craft origin is a fixed world point but the wearer's head is not: at two metres, leaning half a metre would swing the ring 14 degrees off the very axis it exists to report. At a kilometre the same lean is 0.03 degrees and the marks are effectively collimated, as a real head-up display is. Do not move them closer without re-deriving that.
 * `readsDepth` and `writesDepth` are both false, so terrain never buries the marks. If they turn out to be occluded on hardware, the next lever is `ModelSortGroupComponent` with a post depth pass, not moving the marks nearer.
 * The Jump To card is billboarded at the same azimuth 1.25 m ahead, so the marks would be drawn over its text. They are hidden while a Jump To is active, which is simpler than sorting them.
-* The physical `-` button toggles the whole display. It is bound to `buttonOptions`, on the reasoning that `buttonMenu` is already the physically confirmed `+` beside it. GameController's Switch Pro names have already misled this project once, over the roll pair, so treat this mapping as unverified until step 7 of the procedure below has been run.
+* The physical `-` button toggles the whole display. It is bound to `buttonOptions`, originally on the reasoning that `buttonMenu` is already the physically confirmed `+` beside it, and now confirmed on the headset on 10 September 2026. GameController's Switch Pro names had already misled this project once, over the roll pair, so that inference was worth checking rather than assuming; the same caution applies to any further face-button mapping.
 * The accepted tuning set is: distance `1,000` m; colour `(1.0, 0.66, 0.12)` amber; opacity `0.85`; ring style `outlineRing` with a `filledDisc` alternative; circle diameter `1.5` degrees; ring stroke `0.3` degrees; bar thickness `1.0` degrees; each arm `10` degrees measured from the edge of the gap; gap margin `0.4` degrees either side of the ring. The gap half-angle is derived from the ring, so it always fits whatever circle size is set.
 * Both marks are plain generated geometry with no texture. At the accepted sizes the bar is roughly 34 pixels thick on the original M2 Vision Pro and the ring's stroke roughly 10, which should not need softening. If the edges crawl on hardware, the fix is `StarField`'s soft-edged opacity texture, not more segments.
 
@@ -819,7 +823,7 @@ Do not start a later milestone merely because the current change makes it conven
 
 ## Sky: one gradient, driven by air mass
 
-**Status: implemented on 5 September 2026 as a cosmetic change beyond the original brief. Builds clean; the maths is covered by one regression test and by a standalone run, but nothing here has been seen on the physical headset.**
+**Status: implemented on 5 September 2026 as a cosmetic change beyond the original brief. The maths is covered by one regression test and by a standalone run, the banding and rebuild-cadence work below was driven by the owner's own headset observations, and the owner confirmed the sky on the original M2 Vision Pro on 10 September 2026 after the Swift 6 move.**
 
 The sky is still one inward-facing unlit sphere centred on the craft, still textured with a one-dimensional gradient in the angle from local up, and still drawn with `faceCulling = .front`. What changed is where the colours come from and how big the sphere is. `SkyDome.swift` holds all of it; `EarthflightTuning` holds the palette.
 
@@ -881,7 +885,7 @@ The owner reported faint lines in the gradient from the horizon through the mid 
 
 ### Stars
 
-**Status: added on 5 September 2026 at the owner's request, after the gradient was physically accepted. Builds clean and the maths is covered, but the stars themselves have not been seen on the headset.**
+**Status: added on 5 September 2026 at the owner's request, after the gradient was physically accepted. The maths is covered by a regression test, the first pass was revised because the owner found the untextured quads visibly square on the headset, and the owner confirmed the star field on the original M2 Vision Pro on 10 September 2026 after the Swift 6 move.**
 
 The owner asked for "a few twinkling white pixels" to stop raw black space feeling empty, and said explicitly that accuracy does not matter. `StarField.swift` is 900 white quads on a sphere at 95 per cent of the sky dome's radius, added as a child of the dome so they inherit its craft-centred position and its altitude-driven scale and can never fall outside it.
 
@@ -899,6 +903,62 @@ The texture is mipmapped, deliberately and unlike the sky gradient. A star only 
 Two consequences that are accepted rather than overlooked. Stars are drawn over the sandy terrain-gap fill, so they can show through a hole in the tiles below the horizon; tiles are opaque and nearer, so they occlude the stars correctly wherever they have loaded. And the fade is global rather than per direction, so stars near the bright limb are not washed out individually; at the altitudes where stars appear that band is only a couple of degrees wide.
 
 `FlightState.realityKitMatrix` and `doubleMatrix` were marked `nonisolated` for this. They are pure casts, and the star field needs them off the render actor.
+
+## Swift 6: where every callback actually runs
+
+**Status: the app target and `earthflightTests` moved to Swift 6 language mode with `SWIFT_STRICT_CONCURRENCY = complete` on 10 September 2026. Both configurations build with no Swift warnings, all 28 tests pass on the paired M2 Vision Pro, and the owner confirmed flight, tiles, the HUD, Jump To and on-device speech recognition on the headset afterwards. `SWIFT_APPROACHABLE_CONCURRENCY = YES` and `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` are unchanged, as are the accepted controller feel, the ECEF precision and transform order, the CGImage texture upload, the atomic readiness-gated LOD handoff and the two-view Cesium selection.**
+
+### The rule that matters before writing any new callback
+
+`SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` infers a closure as `@MainActor` unless something forces otherwise, and that includes one handed to an Objective-C API. The exception is a block parameter the SDK declares `@Sendable`, which is imported nonisolated — that is why the audio tap below carries no check and the notification observers could not simply be asserted. Everywhere else, Swift 6 emits a hard runtime check inside the bridged block thunk where Swift 5 emitted none. A callback the system delivers on some other queue no longer races quietly; it traps in `_dispatch_assert_queue_fail`:
+
+```text
+BUG IN CLIENT OF LIBDISPATCH: Assertion failed:
+Block was expected to execute on queue [com.apple.main-thread (...)]
+```
+
+That is exactly how the Swift 6 move broke Jump To: `SFSpeechRecognizer.requestAuthorization`'s handler is documented as carrying no main-queue guarantee, and it does arrive elsewhere. The code was untouched by the migration. Only enforcement changed.
+
+So, for every Objective-C or system callback: **read its header for the delivery queue before writing it, and record the answer in a comment beside it.** A clean build proves nothing about where a block runs.
+
+### What each callback's contract is, and why
+
+| Callback | Delivery | Expressed as |
+|---|---|---|
+| `SFSpeechRecognizer.requestAuthorization` handler | header: no main-queue guarantee, and it really does arrive elsewhere | `JumpTo.speechAuthorizationStatus` is `nonisolated` |
+| `recognitionTask(with:resultHandler:)` handler | `SFSpeechRecognizer.queue` defaults to the main queue; the app never sets it | inferred main-actor, left as is |
+| `AVAudioNode.installAudioTap` tap block | AVFAudio declares the Swift refinement's block `@Sendable`; it runs on the audio thread | nonisolated, carries no check |
+| GameController element handlers | `GCDevice.h`: `handlerQueue` defaults to main; the app never sets it | inferred main-actor, left as is |
+| `GCControllerDidConnect` / `DidDisconnect` observers | `queue: .main`, so the main thread | `MainActor.assumeIsolated`, which is a *checked* assertion |
+| The five `CesiumBridge` callbacks | main queue: two through `dispatch_async`, three synchronously from `updateTiles` | `NS_SWIFT_UI_ACTOR` on the block parameters |
+| `MaterialParameters.Texture.Sampler.modify` | synchronous on the caller | inferred main-actor, left as is |
+
+`CesiumBridge.tileDidFinishPreparing:` is deliberately **not** `NS_SWIFT_UI_ACTOR`. It takes a mutex and resolves a Cesium promise, both safe from any thread, and claiming the main actor there would be a lie the compiler would then enforce.
+
+### Two boundaries Swift will not let you simply assert
+
+* **The controller connect/disconnect notifications.** `NotificationCenter` declares the observer block `@Sendable` and nonisolated and offers no main-actor-isolated alternative, so a non-Sendable `GCController` cannot cross from it into `SwitchController`. `MainActor.assumeIsolated` does not help: the value crossing is what is diagnosed, not the isolation. The blocks therefore carry nothing but the signal, and `reconcileBinding` re-reads `GCController.controllers()` on the main actor — which `GCController.h` asks callers to "adopt both" with the notifications anyway. Releasing is still decided by identity, comparing `boundController` against that live array.
+* **The audio tap.** The block is `@Sendable`, so it must not touch the main-actor `SFSpeechAudioBufferRecognitionRequest`. The tap copies each buffer, as it always did, and a fresh copy is in its own isolation region and can be sent; an `AsyncStream<AVAudioPCMBuffer>` carries it in order to a main-actor loop that appends. Nothing may be appended after `endAudio`, and a cancelled `AsyncStream` still hands back what it had buffered, so that loop checks cancellation itself.
+
+### Measured compiler and SDK facts, do not re-derive
+
+* **`swiftc -typecheck` does not run region isolation.** "sending ... risks causing data races" is a SIL diagnostic, so a typecheck-only pass reports a false clean bill. Probe with `-emit-sil` or `-c`.
+* **`NotificationCenter.MainActorMessage` traps on a background post.** The typed main-actor notification API compiles cleanly for `GCControllerDidConnect`, but a runtime probe showed it SIGTRAPs when the notification is posted from a background thread. Which thread GameController posts on is unverified, so this route was rejected. Do not "modernise" the observers onto it.
+* **Region isolation cannot check a global-actor-annotated task-group child that suspends.** `group.addTask { @MainActor in ... }` containing any `await` produces "pattern that the region-based isolation checker does not understand how to check. Please file a bug". `JumpTo.captureTranscript` therefore adds plain children that call main-actor methods, which states the same isolation. Recheck that diagnostic before putting the annotation back.
+* **`MainActor.assumeIsolated` is checked, not a suppression.** It succeeds for a `queue: .main` observer whether the notification was posted from the main thread or a background one, and such a post is delivered synchronously when it comes from the main thread. It traps rather than racing if that ever stops being true.
+
+Do not reach for `@unchecked Sendable`, `nonisolated(unsafe)`, `@preconcurrency` or `assumeIsolated(unsafe:)`. There are none in the project, and adding one hides exactly the class of defect this section exists to catch.
+
+### Auditing the whole app
+
+To find every main-actor claim the runtime will check:
+
+```sh
+BIN=".../Build/Products/Release-xros/earthflight.app/earthflight"
+xcrun otool -tvV "$BIN" > rel.s
+```
+
+then, for each line containing `_swift_task_isCurrentExecutor`, take the nearest preceding label and `xcrun swift-demangle` it. Check every hit that is an Objective-C or system callback against its header. Ignore `__isolated_deallocating_deinit` hits, which are routine. Use the **Release** binary: the Debug build is an `ENABLE_DEBUG_DYLIB` launcher stub and the app code lives in `earthflight.debug.dylib` beside it.
 
 ## Codex working rules
 

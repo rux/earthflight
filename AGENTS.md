@@ -12,12 +12,12 @@ It is a hobby project, not a mathematical proof.
 
 ## The other three files
 
-* **GOTCHAS.md** — hard-won knowledge, by subsystem. Read the relevant section
+* /**docs/GOTCHAS.md** — hard-won knowledge, by subsystem. Read the relevant section
   before touching tiles, textures, coordinates, sky, stars, the HUD, Jump To or
   any Objective-C callback. It exists so you do not repeat an investigation that
   has already been paid for once.
-* **MILESTONES.md** — what was built, in order, and what is left.
-* **BUILDING.md** — the known-good native build of Cesium Native: pinned commits,
+* **/**docs/MILESTONES.md** — what was built, in order, and what is left.
+* **/**docs/BUILDING.md** — the known-good native build of Cesium Native: pinned commits,
   toolchain identity, exact commands. Facts, not plans. Load-bearing; change it
   only when the facts change.
 READ THESE before making any changes.

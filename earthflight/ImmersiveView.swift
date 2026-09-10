@@ -10,6 +10,7 @@ struct ImmersiveView: View {
     @State private var jumpTo = JumpTo()
     @State private var attribution = ""
     @State private var sky: SkyDome?
+    @State private var headUpDisplay: HeadUpDisplay?
     // Owned here rather than by FlightState: FlightState's own closure below
     // captures `state` (itself) strongly, so FlightState retaining this token
     // would be a self-referential retain cycle that no session end could break.
@@ -75,6 +76,17 @@ struct ImmersiveView: View {
             )
             let worldFromCraftAtLaunch =
                 initialWorldFromRenderLocal * state.renderLocalFromCraft
+
+            // The craft's pose in the immersive world is fixed, so the display
+            // is placed once and never moved. It hangs off `content` rather
+            // than off `earthRoot`, which is the part that actually moves.
+            let headUpDisplay = HeadUpDisplay()
+            headUpDisplay.entity.transform = Transform(
+                matrix: FlightState.realityKitMatrix(worldFromCraftAtLaunch)
+            )
+            content.add(headUpDisplay.entity)
+            self.headUpDisplay = headUpDisplay
+
             let subscription = content.subscribe(to: SceneEvents.Update.self) { event in
                 if let destination = jump.takePendingDestination() {
                     state.jump(
@@ -100,6 +112,10 @@ struct ImmersiveView: View {
                     renderLocalFromCraftTangent: state.renderLocalFromCraftTangent,
                     ellipsoidHeightMeters: state.ellipsoidHeightMeters,
                     deltaTime: event.deltaTime
+                )
+                headUpDisplay.update(
+                    craftOrientation: state.orientation,
+                    isJumpToActive: jump.isActive
                 )
 
                 // render-local -> world = fixed world-from-launch-craft followed by
@@ -178,6 +194,7 @@ struct ImmersiveView: View {
         .task {
             let controller = SwitchController(flightState: flightState)
             controller.onJumpToRequested = { jumpTo.start() }
+            controller.onHeadUpDisplayToggleRequested = { headUpDisplay?.toggle() }
             switchController = controller
             controller.start()
             await headTracking.start()

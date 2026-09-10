@@ -22,6 +22,7 @@ final class SwitchController {
     private var isLeftTriggerPressed = false
     private var isRightTriggerPressed = false
     var onJumpToRequested: (@MainActor () -> Void)?
+    var onHeadUpDisplayToggleRequested: (@MainActor () -> Void)?
 
     init(flightState: FlightState) {
         self.flightState = flightState
@@ -162,6 +163,17 @@ final class SwitchController {
                 self.onJumpToRequested?()
             }
         }
+        // On the Switch Pro Controller `buttonMenu` is the physical `+` and
+        // `buttonOptions` is the `-` beside it.
+        gamepad.buttonOptions?.pressedChangedHandler = { [weak self] _, _, pressed in
+            guard pressed else {
+                return
+            }
+            Task { @MainActor in
+                guard let self, binding == self.bindingGeneration else { return }
+                self.onHeadUpDisplayToggleRequested?()
+            }
+        }
 
         print("Switch Pro Controller flight controls ready.")
     }
@@ -207,6 +219,7 @@ final class SwitchController {
         gamepad.buttonY.pressedChangedHandler = nil
         gamepad.rightThumbstickButton?.pressedChangedHandler = nil
         gamepad.buttonMenu.pressedChangedHandler = nil
+        gamepad.buttonOptions?.pressedChangedHandler = nil
     }
 
     @MainActor

@@ -105,6 +105,31 @@ nonisolated enum EarthflightTuning {
 
     static let attributionTrailingInsetPoints: Double = 220
 
+    // MARK: - Head-up display
+
+    // Two marks that say where the craft is pointed and where level is: a ring
+    // on the nose axis and a bar lying in the local horizontal plane, with a gap
+    // the ring sits in. Sizes are angles, not metres, because the marks are put
+    // far enough away to be effectively collimated; `HeadUpDisplay` explains why
+    // distance is what stops physical head movement from moving them off the
+    // axis they report.
+    static let headUpDisplayDistanceMeters: Float = 1_000
+    static let headUpDisplayColour = SIMD3<Double>(0.12, 0.75, 0.12)
+    static let headUpDisplayOpacity: Float = 0.45
+
+    // A ring leaves whatever the nose is aimed at visible through the middle.
+    // The stroke is measured radially and is ignored by a filled disc.
+    static let headUpDisplayCircleStyle = HeadUpDisplayCircleStyle.outlineRing
+    static let headUpDisplayCircleDiameterDegrees = 1.5
+    static let headUpDisplayCircleStrokeDegrees = 0.1
+
+    // Arm length is measured from the edge of the gap, so each arm covers this
+    // many degrees. The gap margin is the clearance between the ring's edge and
+    // each arm; the gap itself is derived from the ring, so it always fits.
+    static let headUpDisplayHorizonBarThicknessDegrees = 0.15
+    static let headUpDisplayHorizonBarArmLengthDegrees = 5.0
+    static let headUpDisplayHorizonBarGapMarginDegrees = 0.5
+
     // MARK: - Sky
 
     // Sky sphere radius while the craft is low. Above roughly 3,000 km the dome

@@ -782,6 +782,39 @@ With the diagnostic sky magenta, broad peripheral gaps really were magenta, whil
 
 The tiny mountainous adjacent-LOD boundary sliver is newly observed but not yet classified beyond genuine magenta sky exposure. It was explicitly lower priority than the now-fixed first-load flash. Do not conflate it with texture readiness or revive the global ancestor shell to hide it. If it becomes worth addressing, reproduce one seam and inspect only the two drawable boundary meshes and their refinement relationship.
 
+### Milestone 9 — New Features
+
+#### HUD
+
+**Status: implemented on 10 September 2026 as a requested addition beyond the original brief. Builds clean in Debug and Release for `generic/platform=visionOS`, and the geometry is covered by one regression test. Nothing here has been seen on the physical headset.**
+
+Two marks, in `HeadUpDisplay.swift`, that say where the craft is pointed and where level is: a ring on the nose axis, and a bar lying in the local horizontal plane with a gap the ring sits in. At launch the ring is inside the gap. Pitch the nose down and the ring goes down with it while the bar stays on the horizon; roll and the bar banks while the ring stays where it is. They exist so the owner can tell, without guessing, which way the left stick will move the craft.
+
+* The craft's pose in the immersive world never changes; `earthRoot` is what moves. "Straight ahead" is therefore a fixed world direction, the ring is a static entity, and only the bar is touched per frame. The display hangs off `content`, not off `earthRoot`.
+* Everything lives in the craft's own frame, so the bar needs the craft attitude and nothing else: no render frame, no floating origin, no ECEF. `HeadUpDisplay.horizonOrientation` projects the nose onto the plane perpendicular to geodetic-up-in-craft-coordinates, which is `(cos(pitch) sin(roll), cos(pitch) cos(roll), -sin(pitch))`. Heading cancels out exactly, which is the geometric statement of the fact that yawing does not move the horizon within the view. The projection cannot degenerate because `advance` clamps pitch to 80 degrees, where it still retains 17 per cent of its length.
+* The bar tracks **local horizontal, not the true visible horizon**, which dips below it by `acos(R / (R + h))`: 0.35 degrees at the launch height, 1 degree at 1 km, 3.2 degrees at 10 km, 10 degrees at 100 km, 30 degrees at 1,000 km. Tracking the true horizon would hold the bar off the ring at startup and, higher up, draw a straight line tangent to a small round limb. Local horizontal is what an attitude indicator shows and what "level" means here. Do not "fix" this without asking.
+* Each arm is an **arc of the horizontal circle**, not a flat bar. Every point on an arc lies exactly on the horizon however long the arm is; a flat bar would touch it only at the centre and drift above it towards the ends.
+* The marks are placed 1,000 metres away and sized in **angles, not metres**. The craft origin is a fixed world point but the wearer's head is not: at two metres, leaning half a metre would swing the ring 14 degrees off the very axis it exists to report. At a kilometre the same lean is 0.03 degrees and the marks are effectively collimated, as a real head-up display is. Do not move them closer without re-deriving that.
+* `readsDepth` and `writesDepth` are both false, so terrain never buries the marks. If they turn out to be occluded on hardware, the next lever is `ModelSortGroupComponent` with a post depth pass, not moving the marks nearer.
+* The Jump To card is billboarded at the same azimuth 1.25 m ahead, so the marks would be drawn over its text. They are hidden while a Jump To is active, which is simpler than sorting them.
+* The physical `-` button toggles the whole display. It is bound to `buttonOptions`, on the reasoning that `buttonMenu` is already the physically confirmed `+` beside it. GameController's Switch Pro names have already misled this project once, over the roll pair, so treat this mapping as unverified until step 7 of the procedure below has been run.
+* The accepted tuning set is: distance `1,000` m; colour `(1.0, 0.66, 0.12)` amber; opacity `0.85`; ring style `outlineRing` with a `filledDisc` alternative; circle diameter `1.5` degrees; ring stroke `0.3` degrees; bar thickness `1.0` degrees; each arm `10` degrees measured from the edge of the gap; gap margin `0.4` degrees either side of the ring. The gap half-angle is derived from the ring, so it always fits whatever circle size is set.
+* Both marks are plain generated geometry with no texture. At the accepted sizes the bar is roughly 34 pixels thick on the original M2 Vision Pro and the ring's stroke roughly 10, which should not need softening. If the edges crawl on hardware, the fix is `StarField`'s soft-edged opacity texture, not more segments.
+
+TODO, if the owner wants it: fade the bar out with altitude, in the way the sky gradient and the star field already fade with air mass. Local horizontal stays well defined at any height, but at 1,000 km the real horizon is 30 degrees below the bar and the mark means progressively less. `StarField.visibility` is the pattern to copy; there is deliberately no altitude term in `HeadUpDisplay` today.
+
+Manual test procedure on the headset:
+
+1. Launch. The ring sits directly ahead, inside the gap in a level horizon bar.
+2. Look around. Both marks stay fixed in the world and do not follow the head.
+3. Push the right stick forward. The ring drops with the nose; the bar stays on the horizon and the ring leaves the gap.
+4. Roll with `X` and `Y`. The bar banks; the ring stays where it is.
+5. Yaw with the right stick. Neither mark moves within the view.
+6. Fly at a building. The marks stay drawn over it.
+7. Press `-`. Both marks disappear. Press again and they return.
+8. Press `+`. The marks hide while the Jump To card is up and return when it finishes.
+9. Climb hard. The bar stays at eye level while the real horizon drops away below it.
+
 Do not start a later milestone merely because the current change makes it convenient.
 
 ## Sky: one gradient, driven by air mass

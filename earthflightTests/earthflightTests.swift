@@ -997,6 +997,91 @@ struct EarthflightTests {
         #expect(simd_length(starDirectionsInEcef[0] - starDirectionsInEcef[1]) < 1e-5)
     }
 
+    @Test("The head-up display marks the nose and keeps its bar on the horizon")
+    @MainActor
+    func headUpDisplayHorizon() {
+        let nose = SIMD3<Float>(0, 0, -1)
+        let barCentre = { (state: FlightState) -> SIMD3<Float> in
+            HeadUpDisplay.horizonOrientation(craftOrientation: state.orientation).act(nose)
+        }
+        let barRight = { (state: FlightState) -> SIMD3<Float> in
+            HeadUpDisplay.horizonOrientation(craftOrientation: state.orientation)
+                .act(SIMD3<Float>(1, 0, 0))
+        }
+
+        // Level: the gap sits on the nose, so the ring is inside it, and the bar
+        // is horizontal. This is the launch picture the owner asked for.
+        let level = FlightState()
+        #expect(simd_length(barCentre(level) - nose) < 1e-6)
+        #expect(simd_length(barRight(level) - SIMD3<Float>(1, 0, 0)) < 1e-6)
+
+        // The gap is derived from the ring, so it always fits it.
+        #expect(
+            HeadUpDisplay.horizonBarGapHalfAngleDegrees >
+                EarthflightTuning.headUpDisplayCircleDiameterDegrees / 2
+        )
+
+        // Nose down: the horizon rises above the nose, and the bar stays exactly
+        // perpendicular to geodetic up, which is what "on the horizon" means.
+        let pitched = FlightState()
+        pitched.rightStick = [0, 1]
+        for _ in 0..<10 {
+            pitched.advance(deltaTime: 0.1)
+        }
+        let geodeticUpInCraft = pitched.orientation.inverse.act(SIMD3<Float>(0, 1, 0))
+        #expect(barCentre(pitched).y > 0.1)
+        #expect(abs(simd_dot(barCentre(pitched), geodeticUpInCraft)) < 1e-6)
+        #expect(abs(simd_dot(barRight(pitched), geodeticUpInCraft)) < 1e-6)
+
+        // Yaw moves the whole world, not the horizon within the view, so heading
+        // must drop out of the bar entirely.
+        let yawed = FlightState()
+        yawed.rightStick = [1, 0]
+        for _ in 0..<10 {
+            yawed.advance(deltaTime: 0.1)
+        }
+        #expect(simd_length(barCentre(yawed) - nose) < 1e-6)
+        #expect(simd_length(barRight(yawed) - SIMD3<Float>(1, 0, 0)) < 1e-6)
+
+        // Roll banks the bar by exactly the roll angle while leaving the gap on
+        // the nose, so the ring stays put and only the bar turns.
+        let rolled = FlightState()
+        rolled.isRollingRight = true
+        for _ in 0..<10 {
+            rolled.advance(deltaTime: 0.1)
+        }
+        let rollAngle = EarthflightTuning.rollRateRadiansPerSecond * 1.0
+        #expect(simd_length(barCentre(rolled) - nose) < 1e-6)
+        #expect(
+            simd_length(barRight(rolled) - SIMD3<Float>(cos(rollAngle), sin(rollAngle), 0)) < 1e-6
+        )
+
+        // At the pitch clamp the projection that builds the bar is at its worst
+        // conditioned, and it still has to produce an orthonormal frame.
+        let clamped = FlightState()
+        clamped.rightStick = [0, 1]
+        for _ in 0..<100 {
+            clamped.advance(deltaTime: 0.1)
+        }
+        let clampedBar = HeadUpDisplay.horizonOrientation(craftOrientation: clamped.orientation)
+        let axes = [clampedBar.act(SIMD3<Float>(1, 0, 0)), clampedBar.act(SIMD3<Float>(0, 1, 0))]
+        #expect(axes.allSatisfy { abs(simd_length($0) - 1) < 1e-5 })
+        #expect(abs(simd_dot(axes[0], axes[1])) < 1e-5)
+    }
+
+    @Test("The head-up display builds both marks as real RealityKit geometry")
+    @MainActor
+    func headUpDisplayBuildsItsMarks() {
+        // Both meshes carry positions and nothing else, which nothing else in
+        // the app does, and both are built with a force-try. Running it here on
+        // the device is the only way to find out whether RealityKit accepts a
+        // mesh with no texture coordinates before the owner puts the headset on.
+        let display = HeadUpDisplay()
+        let meshes = display.entity.children.compactMap { ($0 as? ModelEntity)?.model?.mesh }
+        #expect(meshes.count == 2)
+        #expect(meshes.allSatisfy { !$0.contents.models.isEmpty })
+    }
+
     private func matrixDistance(_ lhs: simd_double4x4, _ rhs: simd_double4x4) -> Double {
         max(
             simd_length(lhs.columns.0 - rhs.columns.0),

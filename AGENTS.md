@@ -1,1007 +1,238 @@
-
 # AGENTS.md — Earthflight
 
-## Mission
-
-Build a private, single-user visionOS application called **Earthflight** for:
-
-* one original M2 Apple Vision Pro;
-* one Nintendo Switch Pro Controller;
-* one technically capable owner running and repairing the app from Xcode.
-
-The app exists for one purpose: fly freely through Google’s photogrammetric 3D Earth data using conventional game-controller flight controls while looking around independently with the user’s head.
-
-This is a personal experimental instrument, not a commercial product, reusable SDK, portfolio architecture exercise or distributable application.
-
-The installed SDK and compiler are authoritative. Do not “correct” beta-27 code merely because remembered Xcode 26 APIs differ. Your knowledge cut-off (early 2026) is earlier than the SDK (August 2026)
-
-The successful experience is:
-
-1. Launch the app directly into a full immersive space.
-2. Google Photorealistic 3D Tiles appear around the user.
-3. The Nintendo Switch Pro Controller moves a virtual craft/camera through the world.
-4. Head movement changes only where the user looks. It never changes flight direction, velocity or orientation.
-5. Pressing the physical `+` button opens a tiny voice-driven “Jump to” interface.
-6. The user speaks a location.
-7. The first MapKit search result wins without confirmation or disambiguation.
-8. The user is moved to approximately 1,000 metres above the ground at that location.
-9. Google’s required attribution remains visible.
-10. A procedural sky dome replaces an otherwise black background. It is blue at ground level and black above the Karman line, its gradient follows the real horizon at any altitude, and stars fade in as the air thins. Nothing else is added.
-
-## Project posture: deliberately raw
-
-Optimise for the shortest understandable path to a satisfying result on this one device.
-
-Prefer:
-
-* direct code;
-* a few small concrete types;
-* ordinary functions;
-* local state;
-* Swift concurrency where it is naturally required;
-* `print`;
-* `assert`, `precondition` and `fatalError`;
-* force unwraps where the project’s fixed assumptions make them honest;
-* manual validation on the physical headset;
-* small commits after working milestones.
-
-A crash followed by fixing the defect and relaunching is acceptable.
-
-Do not add user-facing recovery flows, controller-selection UI, retry frameworks, diagnostics dashboards, settings screens or defensive machinery for configurations that do not exist.
-
-### Explicitly prohibited unless the owner later asks for them
-
-Tests are opt-in. Do not add or expand tests unless the owner explicitly requests them. When requested, add the smallest focused regression test to the existing test target. Do not create another test target, fixtures, mocks or test architecture unless the owner specifically asks for those too.
-
-Do not create:
-
-* unrequested unit tests;
-* unrequested UI tests;
-* additional Swift Testing or XCTest targets;
-* unrequested test fixtures;
-* unrequested mocks;
-* snapshot tests;
-* CI;
-* dependency-injection containers;
-* invented Swift protocols;
-* factories;
-* repositories;
-* coordinators;
-* service locators;
-* MVVM layers;
-* TCA;
-* Clean Architecture;
-* generic networking layers;
-* generic caching layers;
-* persistence;
-* databases;
-* analytics;
-* telemetry;
-* feature flags;
-* remote configuration;
-* onboarding;
-* tutorials;
-* accessibility input alternatives;
-* localisation;
-* multiple user profiles;
-* multiple-controller support;
-* keyboard controls;
-* hand-tracking controls;
-* custom pinch or gesture controls;
-* game mechanics;
-* scores;
-* achievements;
-* POIs;
-* road labels;
-* multiplayer;
-* reusable frameworks;
-* SDK extraction;
-* speculative abstractions;
-* “future-proofing” code.
-
-Do not introduce third-party Swift packages except where genuinely necessary to compile and integrate Cesium Native and its required dependencies.
-
-Do not create a folder hierarchy merely to classify seven files.
-
-Do not create empty types or layers in anticipation of later work. Add a file only when the current milestone requires code in it.
-
-### Simplicity does not excuse incorrect systems code
-
-The following still require care:
-
-* C++ and Swift resource ownership;
-* threading;
-* RealityKit entity lifetime;
-* tile visibility;
-* texture and mesh lifetime;
-* cancellation of obsolete work where necessary;
-* geographic coordinate transforms;
-* floating-point precision;
-* floating-origin rebasing;
-* Google attribution;
-* API-key handling;
-* avoiding unbounded memory or persistent tile caching.
-
-Be ruthless about product complexity, not careless about rendering correctness.
-
-### Physical Vision Pro tool limitation
-
-The coding agent cannot currently use its device-interaction screenshot / accessibility-hierarchy / interactive-session service with the physical Apple Vision Pro.
-
-That service may report support for iOS, watchOS and tvOS 27+ simulators while
-rejecting visionOS hardware. Treat this as a known tooling limitation, not as a
-project, signing, device-pairing or visionOS configuration problem.
-
-Therefore:
-
-* do not repeatedly probe the device-interaction service for Vision Pro support;
-* do not spend time looking for an alternative screenshot/hierarchy session
-  through that service;
-* do not attempt to fix Earthflight, Xcode, signing or deployment settings merely
-  because that service rejects the headset;
-* do not leave a nonexistent interaction session open or wait for one to appear;
-* do not claim that visual appearance, controller feel, immersive placement,
-  attribution position, LOD transitions or other headset-visible behaviour has
-  been verified by the agent.
-
-Xcode build/deployment facilities may still be usable independently where the
-current environment exposes them. Use those normally when available.
-
-For anything requiring visual or experiential validation on the physical
-Vision Pro, build the project and give the owner a concise manual test procedure.
-The owner is the authoritative observer for:
-
-* immersive visual correctness;
-* controller feel;
-* head-tracking behaviour;
-* LOD transitions and blinking;
-* sky appearance;
-* attribution placement;
-* performance, smoothness and comfort.
-
-Do not search for speculative non-interactive screenshot or hierarchy routes
-unless a concrete new capability is explicitly exposed by the current tools.
-
-
-## Fixed technical decisions
-
-These decisions are settled. Do not re-open them without a concrete build, API or performance blocker.
-
-### Application shell
-
-Use:
-
-* Swift;
-* SwiftUI;
-* one `ImmersiveSpace`;
-* full immersion;
-* `RealityView`;
-* RealityKit;
-* exactly one application target.
-
-Do not use Unity.
-
-Do not begin with Metal or Compositor Services. RealityKit has already been demonstrated with this data on the original M2 Vision Pro generation. Move to a custom Metal renderer only after measuring a specific RealityKit limitation that blocks acceptable operation.
-
-No authored Reality Composer Pro scene or asset package is needed. The content is streamed and generated at runtime.
-
-The app and its test target build in **Swift 6 language mode** with `SWIFT_STRICT_CONCURRENCY = complete`, `SWIFT_APPROACHABLE_CONCURRENCY = YES` and `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`. Read "Swift 6: where every callback actually runs" below before adding any Objective-C or system callback; that combination makes a wrong main-actor claim a runtime trap rather than a silent race.
-
-### Earth data
-
-Use Google Map Tiles API **Photorealistic 3D Tiles**.
-
-Google exposes the data as standard OGC 3D Tiles containing glTF content for use by compatible custom renderers.
-
-Do not use:
-
-* Apple Flyover data;
-* private Apple mapping frameworks;
-* reverse-engineered Apple C3M/C3MM data;
-* the old reverse-engineered Google Rocktree endpoints;
-* scraped Google Earth traffic;
-* exported offline city meshes.
-
-Apple frameworks are used for the application, but Apple does not provide the required public raw photogrammetric mesh stream. Google does.
-
-### Tile runtime
-
-Use current upstream **Cesium Native** for:
-
-* tileset traversal;
-* view-dependent selection;
-* level of detail;
-* frustum culling;
-* asynchronous tile loading;
-* glTF parsing;
-* tile caching and eviction.
-
-Cesium Native is not the renderer. It supplies selected in-memory glTF content to the RealityKit integration.
-
-Use Google’s root tileset directly. Do not introduce Cesium Ion unless direct Google access proves concretely incompatible with current Cesium Native.
-
-The root is conceptually:
-
-`https://tile.googleapis.com/v1/3dtiles/root.json?key=YOUR_API_KEY`
-
-### Native-language boundary
-
-Cesium Native is C++. Keep the Swift/C++ boundary narrow and concrete.
-
-The default approach is one small Objective-C++ bridge using `.h` and `.mm` files. Direct Swift/C++ interoperability is acceptable only when the current Xcode implementation is demonstrably smaller and less awkward.
-
-Do not create a separate framework target.
-
-Do not expose Cesium template-heavy types throughout Swift.
-
-Do not attempt to turn the bridge into a reusable mapping library.
-
-### Toolchain transitions
-
-After changing Xcode or visionOS versions, especially when moving from a beta
-toolchain to a release toolchain:
-
-1. do not reuse Cesium Native, vcpkg or other native binaries produced by the previous Xcode toolchain;
-2. confirm that `DEVELOPER_DIR` selects the intended full Xcode installation, not `/Library/Developer/CommandLineTools`;
-3. rebuild the project-local native dependencies from their pinned source revisions;
-4. rebuild Earthflight;
-5. repeat the current milestone's physical-headset smoke test before beginning the next milestone;
-6. update the recorded known-good Xcode, SDK, compiler and native-build details.
-
-Do not add compatibility layers for old beta toolchains. Support the currently installed authoritative toolchain.
-
-A Swift **language mode** change is not a toolchain transition and needs no native rebuild, but it does need its own physical smoke test: it can alter runtime behaviour without changing a line of Swift. Moving to Swift 6 turned a long-standing wrong main-actor inference in Jump To into a hard trap on the first press.
-
-### Apple frameworks
-
-Use:
-
-* RealityKit for immersive rendering;
-* GameController for Nintendo Switch Pro Controller input;
-* Speech for on-device speech transcription;
-* MapKit local search for spoken location to latitude/longitude;
-* SwiftUI only for the minimal Jump To presentation and required attribution.
-
-Do not use Google Places for Jump To. Apple’s `MKLocalSearch` already converts a natural-language place query into map items with coordinates.
-
-## Research already completed
-
-Treat the following as the research baseline. Read current documentation or source where exact APIs have changed, but do not repeat a broad technology survey.
-
-Official references:
-
-* Apple first visionOS app:
-  `https://developer.apple.com/documentation/visionos/creating-your-first-visionos-app`
-* Apple GameController discovery:
-  `https://developer.apple.com/documentation/gamecontroller/discovering-game-controllers`
-* Google Map Tiles overview:
-  `https://developers.google.com/maps/documentation/tile/overview`
-* Google Map Tiles policies:
-  `https://developers.google.com/maps/documentation/tile/policies`
-* Cesium Native rendering integration:
-  `https://cesium.com/learn/cesium-native/ref-doc/rendering-3d-tiles.html`
-
-Known visionOS proof:
-
-* Cesium Native issue describing Google Photorealistic Tiles rendered with RealityKit on visionOS:
-  `https://github.com/CesiumGS/cesium-native/issues/823`
-* Published experimental visionOS application:
-  `https://git.sr.ht/~netshade/traveller-share`
-* Published experimental Cesium Native xrOS fork:
-  `https://git.sr.ht/~netshade/cesium-native`
-
-The existing xrOS fork’s author explicitly described it as exploratory and hacked sufficiently to build. Do not adopt it wholesale as the permanent dependency.
-
-Start with current upstream Cesium Native. Use the experimental fork and application as implementation evidence and as a source of the smallest necessary visionOS build and RealityKit adapter ideas. Once a working Cesium revision is found, pin its commit.
-
-### Known Cesium integration lessons
-
-Do not rediscover these from first principles:
-
-* Cesium Native requires platform implementations such as `IAssetAccessor`, `ITaskProcessor` and `IPrepareRendererResources`.
-* Renderer resources should initially exist but remain invisible.
-* After each view update, stop showing tiles that are fading out and show only the tiles requested for the current frame.
-* Loaded or cached tiles are not automatically all renderable tiles.
-* Geometry/index/normal work may happen during Cesium’s load-thread preparation.
-* Final renderer work such as RealityKit texture creation may need to finish on the main/render thread.
-* Cesium positions use global Earth coordinate systems and double precision.
-* RealityKit content should use a local coordinate frame near the user.
-* Use a local horizontal east/north/up frame and a floating origin.
-* Heights above mean sea level/geoid and heights above the WGS84 ellipsoid are not interchangeable.
-* The previous visionOS implementation solved a location-height offset with an EGM96/geoid-to-ellipsoid correction.
-* Test glTF-to-RealityKit conversion with one simple known model or one isolated tile before streaming a city.
-* The most useful early renderer check is a distant/global view or one static tile, not full-speed flight.
-
-### Settled glTF-to-RealityKit renderer contract
-
-Milestone 4 established a correct RealityKit renderer for Google Photorealistic 3D Tiles. Treat the following as settled implementation constraints, not areas for renewed experimentation:
-
-* glTF texture coordinates use an upper-left image origin. Apply `KHR_texture_transform` in glTF texture-coordinate space first, then convert for RealityKit with `v = 1 - v`.
-* Do not add another UV flip and do not flip decoded image rows.
-* Honour `TextureInfo.texCoord` and any `KHR_texture_transform.texCoord` override.
-* Decode texture-coordinate accessors according to their declared component type and normalisation. Preserve accessor byte offsets, buffer-view byte offsets and byte strides through Cesium's accessor views.
-* Preserve the supported unsigned-byte, unsigned-short and unsigned-int index paths.
-* Upload only the full-resolution base mip when Cesium stores multiple mip levels back-to-back in an image asset.
-* Configure RealityKit sampler address, minification, magnification and mip-filter modes from the glTF sampler rather than relying on RealityKit defaults.
-* Honour glTF `doubleSided` through RealityKit face culling.
-* Preserve the existing node, model, RTC, ECEF and local-ENU transform order. Keep global calculations in double precision and convert to `Float` only for the final local RealityKit vertex payload.
-* Preserve the renderer's asynchronous tile-generation guard. A tile removed while RealityKit resources are being prepared must not be installed afterward.
-
-If later work produces a visual regression, first determine which of these established contracts was broken. Do not speculate that Google geometry, skirts, imagery or Cesium LOD is defective without new evidence that the validated importer contract still holds.
-
-### Settled selection and LOD behavior
-
-Cesium already performs view-dependent selection, frustum culling and screen-space-error refinement. Nearby tiles refine while distant tiles remain progressively coarser and may appear nearly flat. Broad low-detail horizon coverage is expected.
-
-* Do not manually classify tiles by distance or implement a second LOD system.
-* `maximumScreenSpaceError` controls refinement quality. `maximumSimultaneousTileLoads` limits concurrent loading, not the number of visible or cached tiles.
-* Loaded or cached content is not automatically visible content. Continue showing only `tilesToRenderThisFrame` and hiding `tilesFadingOut`.
-* Do not tune SSE, preload behavior, cache limits or load concurrency merely because the selected geographic area is broad. Change them only in response to measured frame time, memory pressure, loading behavior or visible LOD defects on the physical headset.
-
-Research the current upstream APIs where names or build requirements have changed. Prefer current official Apple, Google and Cesium documentation and current upstream source.
-
-Do not silently change the architecture after finding an inconvenience. Report the concrete blocker and the smallest proposed deviation.
-
-## Controller interaction
-
-The only supported controller is the **Nintendo Switch Pro Controller**.
-
-The controller is expected to be connected before launch. No controller picker, connection UI, fallback input or disconnection recovery is required.
-
-Use GameController’s extended gamepad profile and ensure the RealityKit/SwiftUI view receives raw controller events rather than allowing visionOS to reinterpret gamepad input as gaze-and-pinch UI interaction.
-
-Apple’s face-button property names are positional rather than promises about the glyph printed on a Nintendo controller. The mapping below records the callbacks physically accepted with the Switch Pro Controller on the original M2 Vision Pro.
-
-Accepted control mapping:
-
-| Controller input            | Behaviour                      |
-| --------------------------- | ------------------------------ |
-| Left stick up/down          | Forward/backward translation   |
-| Left stick left/right       | Strafe left/right              |
-| Right stick left/right      | Yaw                            |
-| Right stick up/down         | Pitch, aircraft-style inverted |
-| L or R shoulder button      | Ascend                         |
-| L + R shoulder buttons      | Ascend with vertical boost     |
-| ZL or ZR trigger            | Descend                        |
-| ZL + ZR triggers            | Descend with vertical boost    |
-| GameController `buttonX`    | Roll left                      |
-| GameController `buttonY`    | Roll right                     |
-| Physical bottom face button (`buttonA`) | General speed boost |
-| `+`                         | Open voice Jump To             |
-| Right-stick click           | Reset yaw, pitch and roll      |
-
-“Inverted pitch” means pushing the right stick physically forwards/up pitches the craft nose down; pulling it backwards/down pitches the nose up.
-
-Treat the shoulder buttons and ZL/ZR triggers as digital buttons. Pressing either
-member of a vertical pair gives normal vertical movement; pressing both members
-of the same pair applies the boost multiplier to vertical movement.
-
-Use a small dead zone. Begin with linear input. Do not create configurable curves or a settings screen.
-
-Other unused face-button callbacks, D-pad, `-`, Home and Capture can remain unused.
-
-## Head tracking and craft control
-
-Head direction must never steer the craft.
-
-The system-controlled RealityKit camera naturally follows the user’s head.
-
-Maintain two distinct concepts:
-
-1. **Craft pose** — controlled only by the game controller.
-2. **Head pose relative to craft** — controlled only by the user’s physical head.
-
-Moving or rotating the head changes the rendered view relative to the craft. It does not mutate the craft’s position, yaw, pitch, roll or velocity.
-
-The combined craft-plus-head virtual camera pose may be supplied to Cesium Native for view-dependent tile selection. That is rendering input, not flight input.
-
-Begin with one centre-eye approximation for Cesium view selection. Do not implement separate left-eye and right-eye tile-selection passes unless visible LOD artefacts demonstrate that it is necessary.
-
-## Flight model
-
-Use a direct kinematic flight model.
-
-Do not use a physics engine.
-
-Maintain:
-
-* geographic/ECEF position in double precision;
-* craft orientation as a quaternion;
-* velocity or direct per-frame displacement;
-* local east/north/up basis;
-* elapsed frame time;
-* current altitude;
-* current speed multiplier.
-
-Movement should be deterministic from controller input and frame delta.
-
-Forward and strafe movement are relative to craft orientation.
-
-Ascend and descend should initially follow local geodetic up/down, independent of craft roll.
-
-Speed should scale with altitude so that:
-
-* low-altitude movement permits controlled inspection;
-* city-scale movement is fast;
-* high-altitude movement can cross countries;
-* the boost button multiplies the current speed.
-
-Do not add physics-style inertia, lift, drag, gravity, collision detection, terrain avoidance, stalls or aircraft simulation. The only accepted release motion is the narrow linear left-stick and vertical release decay recorded in the Milestone 8 completion notes.
-
-Roll is visual and directional freedom, not an aerodynamic model.
-
-### The flight ceiling, and why speed scaling needed one
-
-**Status: found and fixed on 5 September 2026, reported from the headset.**
-
-Speed scales with altitude, and that is deliberate. The consequence is not: pitch the nose over and hold the left stick and the *horizontal* speed becomes climb rate, so height feeds its own growth. At the 80 degree pitch limit `dh/dt = 1.77 * h`, or `7.09 * h` with boost, which multiplies e-fold every 0.56 seconds. `maximumVerticalSpeedMetersPerSecond` does not bound this at all, because it only caps the ZL/ZR input. Do not mistake it for a ceiling.
-
-The reported symptom was flying backwards while looking down, then losing the controls while the sandy sky fill stayed frozen at a size larger than the shrinking Earth. Two failures compounded:
-
-* **The integration step count grew without bound.** `integrate` split each frame's tangent movement into steps of a flat 10 km, but the movement itself grows with altitude, so the two multiplied. Ten seconds of pitched climb reached fifty million kilometres and **899,106 Cesium conversions in one frame**. That is what took the frame rate, and with it the controls, the tile updates and the sky's own update, which is why the sandy disc froze at the last height it had been built for while the world kept receding. The step limit is now angular, `10 km / 6,371 km` of arc scaled by the craft's geocentric radius: identical at the surface, and flat at about 115 steps per frame at any altitude, 460 for a boosted stick on the slowest frame `advance` will accept. `FlightState.integrationStepCount` exists so a test can pin that.
-* **Nothing bounded the height.** RealityKit render-local positions are Float. One unit in the last place is 47 metres at the ceiling, but 6 km at ten times it and 206 km at 1.7 billion km, where the globe comes apart. `EarthflightTuning.maximumEllipsoidHeightMeters` is the Moon's mean distance, 384,400 km, clamped in `integrate`, the single place flight changes height. The Earth is already under two degrees wide there, and the same pitched trick brings the craft back down in under two seconds, so the ceiling is not a trap.
-
-Capping horizontal speed would also have stopped the runaway, and was rejected: it would change the accepted feel at every altitude to fix a problem that only exists at the top.
-
-## Earth coordinate model
-
-Keep planetary coordinates in double precision outside RealityKit.
-
-RealityKit entities should remain near a local origin using ordinary metre-scale float transforms.
-
-Use:
-
-* WGS84/cartographic or ECEF for the craft’s persistent global position;
-* a local east/north/up tangent frame near the current craft position;
-* an Earth/content root entity transformed relative to the user;
-* periodic rebasing when the local coordinate values become unnecessarily large.
-
-Do not attempt to move RealityKit’s system camera directly. Simulate virtual travel by updating the world/content transform and the geographic craft state while the physical camera remains controlled by visionOS.
-
-Coordinate work deserves direct comments explaining:
-
-* source coordinate system;
-* destination coordinate system;
-* units;
-* handedness;
-* matrix multiplication order;
-* whether a transform is camera-to-world or world-to-camera.
-
-Do not conceal coordinate transforms behind generic matrix helpers with ambiguous names.
-
-## Jump To
-
-Pressing the physical `+` button begins one voice query.
-
-Show only a minimal noninteractive presentation such as:
-
-* `Jump to…`
-* current recognised transcript;
-* a listening indicator.
-
-No keyboard entry, buttons, result list, confirmation, autocomplete or “did you mean” flow is required.
-
-Pipeline:
-
-1. Request microphone and speech permission when first required.
-2. Capture one utterance with Apple Speech.
-3. Put the resulting text into `MKLocalSearch.Request.naturalLanguageQuery`.
-4. Take the first returned map item.
-5. Read its coordinate.
-6. Determine a practical ground elevation for that coordinate.
-7. Convert elevation datum where required for Cesium/WGS84.
-8. Place the craft approximately 1,000 metres above the ground.
-9. Rebase the local world origin.
-10. Resume flight.
-
-The initial elevation source may be Google Elevation API or the simplest current equivalent already available alongside Google Maps billing. Use the minimum request and no generic elevation abstraction.
-
-No-result behaviour may simply close the presentation and do nothing.
-
-Unexpected programmer errors may print and return or terminate the app. Do not construct an error-presentation system.
-
-System microphone and speech permission prompts are unavoidable and acceptable.
-
-## Google attribution and data policy
-
-The only persistent non-flight UI is the attribution required by Google.
-
-Follow the current Google Map Tiles policy.
-
-The application must show:
-
-* the required Google Maps branding;
-* the combined attribution/copyright strings associated with currently displayed tiles.
-
-Google’s tile attribution may appear in glTF `asset.copyright`. Do not assume one static copyright string is sufficient. Aggregate and update attribution from visible content as required by the current policy.
-
-Use Cesium Native's `CreditSystem` snapshot as the source of dynamic data attribution. It already aggregates the credits associated with the current render set. Display its unique sorted current credits in full without deliberate truncation.
-
-Use Google's official, unmodified outlined Google Maps logo over the rendered imagery at a height within Google's required 16–19 point range. Keep the logo and current data attribution visibly associated and persistently visible. Do not replace the official asset with recreated text or artwork while the asset remains usable.
-
-Do not build an offline city exporter or custom persistent tile archive.
-
-A bounded transient Cesium cache needed for normal interactive streaming is acceptable. No custom long-term cache is required.
-
-## Secrets and billing
-
-Do not commit the Google API key.
-
-Use one ignored file such as:
-
-`Secrets.xcconfig`
-
-Optionally commit:
-
-`Secrets.example.xcconfig`
-
-with a placeholder value.
-
-Expose only the required build setting to the application.
-
-Do not create:
-
-* a backend;
-* a secrets service;
-* token exchange;
-* proxy server;
-* account system.
-
-This is a private client app. Restrict the Google key through the controls Google currently provides, but do not pretend a key embedded in a client binary is secret.
-
-## Suggested source shape
-
-Keep the Swift application approximately this small:
-
-* `EarthflightApp.swift`
-* `ImmersiveView.swift`
-* `FlightState.swift`
-* `SwitchController.swift`
-* `JumpTo.swift`
-* `AttributionView.swift`
-* `CesiumBridge.h`
-* `CesiumBridge.mm`
-
-Additional renderer/Cesium files are acceptable only when the C++ integration genuinely requires them.
-
-This is a ceiling, not a request to create all files immediately.
-
-A single Observation-compatible flight-state object is acceptable. Do not surround it with view models.
-
-A small controller type is acceptable. Do not call it a controller manager or introduce a controller protocol.
-
-A concrete HTTP asset accessor required by Cesium is acceptable. Do not generalise it into an application networking stack.
-
-## Milestones
-
-Work on one milestone at a time.
-
-### Milestone 0 — Virgin project
-
-* Ordinary visionOS App template.
-* One target.
-* Full immersive RealityKit scene.
-* Builds in simulator.
-* Runs on physical M2 Vision Pro.
-* Clean Git commit.
-
-### Milestone 1 — Controller diagnostic
-
-* Direct full immersive launch.
-* Simple generated grid, axes or cubes.
-* Raw Switch Pro Controller events.
-* Empirical physical-to-GameController mapping.
-* No flight.
-* No Cesium.
-* No network.
-
-### Milestone 2 — Synthetic flight rig
-
-* Craft state and quaternion.
-* Controller movement.
-* Inverted pitch.
-* Roll.
-* Altitude-dependent speed.
-* Head free-look demonstrably independent from craft steering.
-* Synthetic grid/cubes only.
-
-### Milestone 3 — Cesium Native build
-
-* Current upstream Cesium Native built and linked for visionOS arm64.
-* Smallest platform integrations required to initialise it.
-* Inspect the published xrOS fork only where current upstream fails.
-* Pin a known working revision.
-* Validate one simple glTF or isolated tile conversion.
-* No broad refactor.
-
-After the first successful physical-device Cesium build, create or update a short tracked `BUILDING.md` recording facts rather than plans:
-
-- exact Cesium Native commit;
-- exact vcpkg commit, if used;
-- Xcode version and build number;
-- visionOS SDK version;
-- Clang version;
-- deployment target;
-- selected `DEVELOPER_DIR` convention;
-- complete configure and build commands;
-- required CMake options;
-- any local patches;
-- physical-device smoke-test result.
-
-Do not document transient failed experiments unless they explain a necessary
-non-obvious workaround.
-
-### Milestone 4 — Static Google location
-
-* Direct Google Photorealistic 3D Tiles root.
-* One static location, preferably central London/Brixton.
-* Correct RealityKit mesh, texture and transform.
-* Correct visible-tile selection.
-* Google branding and dynamic attribution present immediately.
-
-### Milestone 5 — Dynamic flight streaming
-
-**Status: completed and physically accepted on the original M2 Vision Pro on 1 September 2026.**
-
-* Per-frame Cesium view update.
-* Tile appearance/disappearance.
-* Camera/craft motion.
-* Head-relative view included in LOD selection.
-* Bounded resource use.
-
-Milestone 5 begins from the validated Milestone 4 renderer and Cesium selection pipeline. Do not redesign the importer, texture path, material path or tile-selection machinery.
-
-Replace the fixed Milestone 4 `ViewState` input with one centre-eye Cesium view derived from the combined craft pose and the current head pose relative to the craft. The head-relative pose affects only the rendered view and Cesium selection; it must never mutate craft orientation, velocity or flight direction.
-
-Keep three representations coherent on every update:
-
-1. the craft's persistent global ECEF/cartographic pose in double precision;
-2. the combined craft-plus-head global view supplied to Cesium;
-3. the inverse local transform applied to the RealityKit Earth/content root while the system camera remains head-controlled.
-
-A mismatch between the Cesium selection pose and the RealityKit rendered pose causes inappropriate refinement, missing nearby detail and excessive off-screen loading. Treat pose coherence as the first diagnostic when dynamic streaming looks wrong.
-
-Continue dispatching Cesium main-thread tasks before each view update. Preserve tile visibility semantics, asynchronous generation cancellation and current-render-set attribution while the selection changes every frame.
-
-### Milestone 5 completion notes
-
-Established and physically accepted on the original M2 Vision Pro on 1 September 2026:
-
-* Dynamic Google Photorealistic 3D Tile streaming works during controller flight, with Cesium selecting and showing the current render set as the craft moves.
-* The combined craft-plus-head centre-eye pose drives Cesium selection while head movement remains independent of craft position, orientation and flight direction.
-* The inverse local Earth-root transform remains coherent with the Cesium view, so rendered motion, refinement and nearby detail stay aligned.
-* The accepted Switch Pro flight controls, hard orientation reset, blue-gradient sky dome, visible Google branding and current dynamic attribution are all working together in the immersive experience.
-* Resource use is bounded during normal dynamic streaming.
-
-### Settled Milestone 5 flight and presentation behavior
-
-Treat these as accepted implementation contracts. Do not redesign them during Milestone 6 merely because another representation appears more physically realistic.
-
-* Store heading, pitch and roll as independent control state and rebuild the craft orientation basis explicitly. With roll equal to zero, yaw and pitch, including simultaneous diagonal right-stick input, must leave the horizon level. Do not restore incremental `yaw * orientation * pitch` quaternion accumulation.
-* Right-stick click is a hard orientation reset. It restores the launch heading, pitch and roll while preserving geographic position and movement input state; it is not merely a roll-level command.
-* The accepted background is a generated inward-facing unlit sky dome: deep blue at the zenith, softer blue through the middle and pale warm blue at the horizon. It shares the Earth-root attitude transform and remains centred on the virtual craft.
-* Keep all owner-editable flight feel constants in `EarthflightTuning.swift`. The accepted curve uses a `6` horizontal speed multiplier and a two-stage vertical curve: the low-altitude curve is capped at 100 m/s, a second squared term begins above 250 m, and absolute vertical speed is capped at 3,000 m/s. Milestone 8 completion notes record the complete accepted tuning set.
-* Preserve the focused transform regression test that verifies `localEarthFromCraftDelta` maps the initial craft pivot to the current craft position and that its inverse maps back. This protects the relationship between rendered RealityKit motion and the Cesium selection pose.
-
-### Milestone 6 — Planetary coordinates
-
-* Robust local tangent frame.
-* Floating-origin rebasing.
-* Reliable altitude.
-* Flight across larger distances.
-* Profiling and M2 device tuning only where measured.
-
-### Milestone 6 completion notes
-
-Established in the working Milestone 6 build:
-
-* Craft position remains in WGS84 ECEF double precision, with a new local east/north/up render frame derived from the craft position when rebasing.
-* The Earth render origin rebases after 50 km of ECEF displacement, keeping RealityKit transforms metre-scale without moving the system-controlled camera.
-* Horizontal integration uses the local tangent frame in bounded 10 km steps, then reconstructs ECEF at the intended WGS84 ellipsoid height to avoid chord-induced altitude gain.
-* The renderer receives the updated ECEF-to-render-local transform on each rebase, preserving the accepted craft, Earth-root and Cesium-view pose coherence across large-distance flight.
-* Ellipsoid height is the authoritative flight altitude, while the existing speed reference remains explicitly separate from terrain height or AGL.
-
-Milestone 6 must extend the accepted Milestone 5 coordinate range without breaking its Earth-root/Cesium-view pose coherence, independent head look, attitude invariants, sky presentation or transform regression test.
-
-### Milestone 7 — Voice Jump To
-
-* `+` input.
-* Speech transcription.
-* First MapKit result.
-* Ground elevation.
-* Geoid/ellipsoid correction.
-* Teleport to 1,000 metres above ground.
-
-### Milestone 7 completion notes
-
-Established on the original M2 Vision Pro:
-
-* The physical Switch Pro `+` button is `GCExtendedGamepad.buttonMenu`; only its press-down transition starts one Jump To operation.
-* Jump To pauses only `FlightState.advance`; head tracking, current Cesium selection, tile lifecycle, sky, and attribution continue. A fully resolved destination crosses to the existing scene update as one pending value, where `FlightState.jump` and `googleRenderer.setRenderFrame` happen before the next Cesium view update.
-* MapKit receives the exact trimmed transcript without a region and `response.mapItems.first` wins. One Google Elevation request supplies mean-sea-level ground height; bundled Cesium `WW15MGH.DAC` EGM96 supplies `N`; use `groundEllipsoidHeight = H + N`, then add the fixed 1,000 m clearance.
-* The jump resets heading, pitch, and roll through the same complete orientation-reset path as a right-stick click, while preserving position at the resolved destination and active controller inputs. It centres a fresh render frame at the new ECEF craft position and sets the speed-reference ground datum, so every destination begins at a 1,000 m speed reference. It does not recreate the tileset or renderer resources.
-* The preferred `SpeechAnalyzer` capture path has a concrete visionOS blocker: `AVCaptureDevice.default(for: .audio)` returned no device on hardware, and `AVCaptureDevice.DeviceType.microphone` is unavailable to visionOS. Use the single legacy `SFSpeechRecognizer` plus `AVAudioEngine` fallback, with `AVAudioNode.installAudioTap` and a copied mutable PCM buffer. Do not reintroduce both recognition paths in parallel.
-* A SwiftUI `.overlay` outside a full immersive `RealityView` did not present the temporary status card on hardware. Keep Jump To status as a persistent RealityView `Attachment`, billboarded directly in front of the wearer and transparent while idle; do not replace it with an outer window overlay.
-* Speech Jump To was physically exercised successfully for San Francisco, Tokyo, and Mexico City. The overlay shows the active prompt and partial transcript.
-
-### Milestone 8 — Final feel, LOD transitions and cleanup
-
-**Status: completed and physically accepted by the owner on the original M2 Vision Pro on 4 September 2026.**
-
-### Milestone 8 completion notes
-
-* Owner-editable values are centralised in `EarthflightTuning.swift`. The accepted controller and flight values are: dead zone `0.12`; yaw `1.2` rad/s; pitch `1.0` rad/s; roll `0.45` rad/s; maximum pitch `80` degrees; horizontal curve `max(3, referenceHeight * 0.3) * 6`; boost multiplier `4`; vertical curve minimum `1` m/s, low-altitude squared factor `1`, low-altitude cap `100` m/s, high-altitude threshold `250` m, high-altitude excess-squared factor `0.0015`, and absolute cap `3,000` m/s.
-* Left-stick translation and vertical movement have a linear `0.5` second release decay. Active input remains immediate. Setting the duration to zero disables the effect and bypasses its state and calculations. Any new deliberate input cancels the existing decay. Per-axis release state preserves the strongest deliberate sample so the Switch Pro stick's opposite-direction recenter rebound cannot reverse a same-direction release tail.
-* Right-stick yaw and pitch have the same linear decay, `EarthflightTuning.steeringReleaseDurationSeconds`, accepted at `0.15` seconds. What coasts is the turn rate, so the craft eases out of a turn instead of stopping dead: about 4.8 degrees of run-off from full yaw, half what the held stick would have covered over the same time. Button roll is deliberately unaffected. A right-stick click clears this tail, because a hard orientation reset that immediately turned back off level would be wrong; it still preserves movement input and the movement tail. Both sticks share one `StickReleaseDecay` value, so the rebound rule above covers the right stick too rather than being reimplemented for it.
-* The accepted controller remap is: `buttonX` rolls left; `buttonY` rolls right; either L or R ascends; either ZL or ZR descends; holding both ascent buttons or both descent buttons applies the normal `4` times boost to vertical movement. The physical bottom face button remains the general boost control. Right-stick click remains the complete orientation reset.
-* A completed Jump To now performs that same complete orientation reset. It preserves the resolved destination position and active controller input, while clearing any residual movement-release tail.
-* Cesium LOD selection uses maximum screen-space error `24` and maximum simultaneous tile loads `8`. LOD transitions were later turned off; see the dragons section. No custom distance LOD, fog-density tuning, tile excluder, fade shader, or second selection system was added.
-* The Cesium transient in-memory tile cache is `1 GiB` (`1,024 * 1,024 * 1,024` bytes). It is not a persistent disk cache. The larger bound may reduce reloads after looking away and back, at the cost of additional memory pressure.
-* RealityKit's transparent `OpacityComponent` crossfade was rejected because overlapping photogrammetry exposed the sky and geometry behind tall structures. The accepted transition is an opaque, readiness-gated handoff. RealityKit mesh and texture creation now completes through Cesium's asynchronous `prepareInLoadThread` future before `prepareInMainThread` makes the tile selectable. `GoogleTileRenderer.publishSelectedAndRetireOutgoing` then enables the complete selected representation and disables its predecessors as one uninterrupted main-actor scene change, without an arbitrary overlap delay.
-* Tile containers remain identity children of `earthRoot`, while primitive transforms retain their independent ECEF/render-local anchors. Preparation and later rebases use the latest render frame so Jump To remains coherent. Monotonic identifiers are allocated atomically during load-thread preparation; renderer identity never uses a `Tile` pointer address.
-* Cesium receives the accepted 90-by-70-degree, 1024-by-1024 detail view plus a 120-by-110-degree, 1-by-1 coverage view at the same centre eye. Cesium culls against their union but takes the largest SSE, so the first preserves refinement pressure while the second covers the Vision Pro periphery. Do not change the coverage viewport to zero height: cesium-native 0.64 treats that as a reason to bypass fog culling.
-* Google RGBA imagery is wrapped in a no-flip, upper-left-row-order `CGImage` and passed to RealityKit's asynchronous `TextureResource(image:options:)`. Do not restore the raw `TextureResource(dimensions:format:contents:)` upload without repeating the first-use headset test; it produced a pale white frame before every newly encountered texture became usable. That `CGImage` is labelled `sRGB`, because glTF defines base-colour texels as sRGB. It was labelled `displayP3` until 6 September 2026, which suppressed the gamut conversion and pushed every saturated colour out towards the wider P3 primaries. RealityKit colour-manages the image into Display P3 itself; the correction is to the label, not to the upload path.
-* Milestone 6/7 planetary telemetry, its attachment and periodic console summary were removed. Sanitised failure diagnostics and the Jump To attachment remain.
-* Google attribution remains a persistent screen-space overlay and is shifted left with a `220` point trailing inset.
-* The procedural inward-facing unlit sky remains deliberately simple. The lower hemisphere fades to a light dull sandy brown so a brief terrain gap is less stark than the former uninterrupted horizon blue. Its fixed 600,000 metre radius and its fixed colours were both later replaced; see the sky section below for what actually ships.
-
-### Tile transitions: here be dragons
-
-**Status: resolved and physically accepted by the owner on the original M2 Vision Pro on 5 September 2026.** Read this before touching tile visibility, retirement, selection, or texture creation. The investigation separated two independent defects that initially looked like one.
-
-#### The symptom
-
-With the diagnostic sky magenta, broad peripheral gaps really were magenta, while the conspicuous forward first-load flashes were pale white or sandy and never magenta. Flying back over already visited terrain and ordinary up/down LOD changes were seamless. Highly mountainous terrain can still reveal a tiny magenta sliver where adjacent tiles at different LODs do not share an identical boundary; that is a separate low-priority geometric seam, not the first-load flash fixed here.
-
-#### Demonstrated causes and accepted corrections
-
-* **Peripheral sky exposure was view-selection undercoverage.** The original hard-coded 90-by-70-degree centre-eye frustum did not cover the physical Vision Pro periphery. Adding the low-SSE 120-by-110-degree coverage view eliminated those gaps during forward, backward, high-speed, and high-altitude flight without weakening the accepted detail view. A zero-by-zero coverage viewport appeared to work but disables Cesium fog culling; keep it at one-by-one.
-* **The pale first-load frame was RealityKit's raw texture creation path.** A solid cyan material never flashed. A constant cyan image uploaded through `TextureResource(dimensions:format:contents:)` still flashed white, proving the source pixels and Google's coarse imagery were not responsible. Completing an asynchronous GPU copy from that texture did not help, proving simple pixel readability was not sufficient. The same constant cyan pixels uploaded through `TextureResource(image:options:)` did not flash, and restoring the real Google pixels through that path eliminated the flash while preserving correct orientation and improving perceived colour.
-* **Preparation completion and visible publication are now honest even though they were not the white-flash cause.** CPU payload extraction happens on Cesium's worker path. Its future remains pending while the main actor creates every required RealityKit mesh, texture, material, and disabled entity. Partial or zero construction resolves as failure, never as covering geometry. `prepareInMainThread` is only a small synchronous finalisation, and selection calls `show` on already-prepared content. The future resolves exactly once, identifiers are thread-safe, and Cesium's eight-load limit bounds pending RealityKit work.
-* **The opaque handoff is atomic.** Prepared entities remain disabled until the complete selected set is drawable. Enabling that set and disabling outgoing content happens synchronously on the main actor with no `await` between visibility changes. This removed the observed intersecting-LOD appearance without fading, accumulating ancestors, or lengthening an overlap timer.
-
-#### Disproved by measurement, do not re-derive
-
-* **Earthflight is not hiding anything too early.** Retirement is derived from the difference between what the renderer is drawing and what Cesium selected this update, and it happens only when the whole selected set is installed. Deriving it from Cesium's `tilesFadingOut` instead, as the first implementation did, genuinely was wrong: that list names a tile only on the single frame its overlap window elapses.
-* **Earthflight is not removing anything visible.** `GoogleTileRenderer.remove` prints when it drops a tile that is installed and enabled. It never printed across many flights.
-* **Cesium is not selecting unloaded tiles.** The per-update counters for selected tiles that are not `Done` or `Failed`, that are external content, or that have no identifier, all read zero throughout flight. Every tile Cesium selects, Earthflight draws.
-* **Waiting more frames does not help.** Extra opaque overlap made no observable improvement and produced intersecting-LOD artefacts. The timer and diagnostic switch were removed.
-* **`TilesetOptions::forbidHoles` does not help.** Its doc comment promises a parent will not refine until every child is ready, but all three uses in cesium-native 0.64 are in the culled branch of `visitTileIfNeeded`. It only makes culled tiles load and report upward. Do not re-trust that comment.
-* **Covering the gaps individually does not help.** Finding each uncovered sibling and showing the nearest drawable ancestor changed nothing visible.
-* **Covering everything is worse than the defect.** Keeping the whole ancestor chain of every selected tile on screen does close gaps, but measured at up to 96 extra tiles against a render set of 90 to 236 it starved tile loading badly. The shell implementation and switch were removed.
-* **Setting retirement false, so nothing is ever hidden, is much worse**: large areas stay stuck on coarse tiles. Retirement is doing real work; the diagnostic switch was removed.
-* **Construction completion alone was not the white-flash fix.** Rebuilding a resident tile while detached produced no visible disturbance, and moving full RealityKit preparation ahead of selection did not alter the flash while the raw texture initializer remained. Do not misreport renderer-readiness timing as the demonstrated visual cause.
-* **A completed GPU copy was not a presentation barrier.** Copying every new raw texture to a temporary Metal texture still flashed and added needless preparation work and transient memory. That experiment was removed.
-
-#### Established facts about cesium-native 0.64
-
-* `Tileset::updateViewGroup` permanently forces `enableFrustumCulling` and `enableFogCulling` to false whenever `enableLodTransitionPeriod` is true. That floods the selection with tiles right around the globe: it took the render set from about 90 to 215. Since Earthflight no longer reads `tilesFadingOut`, the transition period buys nothing, so `lodTransitionsEnabled` is now `false`.
-* `visitVisibleChildrenNearToFar` ANDs `allAreRenderable` across children but ORs `anyWereRenderedLastFrame`. One already-rendered child switches `kickDueToNonReadyDescendant` off, so the parent refines regardless, drawing the children that are ready and omitting those that are not. `TilesetOptions` exposes no lever for this.
-* A counter that marks every selected tile and its ancestors, then looks for a child visible to the camera yet neither selected nor an ancestor of anything selected, reports two to nine such gaps on essentially every update, including updates with nothing installing and retirement running freely. That measurement is real but has known false positives, because Google's bounding volumes are loose.
-* `Tile::isRenderable` is false for every `Done` tile that is unconditionally refined and has children, which is exactly Google's structural external-tileset nodes. Never use it as a proxy for "has content"; test `Tile::getState` against `Done` and `Failed`.
-* Tiles referenced by an `IntrusivePointer` count as content-referenced and cannot be unloaded, so holding `Tile::ConstPointer` is a valid way to keep content alive while it is still drawn.
-* Do not key renderer state on `%p` of the `Tile`. Cesium destroys and reallocates `Tile` objects constantly while flying into new ground, and a recycled address would alias two live tiles. Identifiers are now an atomic monotonic counter assigned during load-thread preparation.
-
-#### Remaining limitation
-
-The tiny mountainous adjacent-LOD boundary sliver is newly observed but not yet classified beyond genuine magenta sky exposure. It was explicitly lower priority than the now-fixed first-load flash. Do not conflate it with texture readiness or revive the global ancestor shell to hide it. If it becomes worth addressing, reproduce one seam and inspect only the two drawable boundary meshes and their refinement relationship.
-
-### Milestone 9 — New Features
-
-#### HUD
-
-**Status: implemented on 10 September 2026 as a requested addition beyond the original brief. Builds clean in Debug and Release for `generic/platform=visionOS`, and the geometry is covered by one regression test. The owner confirmed the display on the original M2 Vision Pro later the same day, including the `-` toggle, which settles the `buttonOptions` mapping this section had flagged as unverified. The numbered procedure below is kept as the way to re-check the marks after any change to attitude, placement or depth behaviour.**
-
-Two marks, in `HeadUpDisplay.swift`, that say where the craft is pointed and where level is: a ring on the nose axis, and a bar lying in the local horizontal plane with a gap the ring sits in. At launch the ring is inside the gap. Pitch the nose down and the ring goes down with it while the bar stays on the horizon; roll and the bar banks while the ring stays where it is. They exist so the owner can tell, without guessing, which way the left stick will move the craft.
-
-* The craft's pose in the immersive world never changes; `earthRoot` is what moves. "Straight ahead" is therefore a fixed world direction, the ring is a static entity, and only the bar is touched per frame. The display hangs off `content`, not off `earthRoot`.
-* Everything lives in the craft's own frame, so the bar needs the craft attitude and nothing else: no render frame, no floating origin, no ECEF. `HeadUpDisplay.horizonOrientation` projects the nose onto the plane perpendicular to geodetic-up-in-craft-coordinates, which is `(cos(pitch) sin(roll), cos(pitch) cos(roll), -sin(pitch))`. Heading cancels out exactly, which is the geometric statement of the fact that yawing does not move the horizon within the view. The projection cannot degenerate because `advance` clamps pitch to 80 degrees, where it still retains 17 per cent of its length.
-* The bar tracks **local horizontal, not the true visible horizon**, which dips below it by `acos(R / (R + h))`: 0.35 degrees at the launch height, 1 degree at 1 km, 3.2 degrees at 10 km, 10 degrees at 100 km, 30 degrees at 1,000 km. Tracking the true horizon would hold the bar off the ring at startup and, higher up, draw a straight line tangent to a small round limb. Local horizontal is what an attitude indicator shows and what "level" means here. Do not "fix" this without asking.
-* Each arm is an **arc of the horizontal circle**, not a flat bar. Every point on an arc lies exactly on the horizon however long the arm is; a flat bar would touch it only at the centre and drift above it towards the ends.
-* The marks are placed 1,000 metres away and sized in **angles, not metres**. The craft origin is a fixed world point but the wearer's head is not: at two metres, leaning half a metre would swing the ring 14 degrees off the very axis it exists to report. At a kilometre the same lean is 0.03 degrees and the marks are effectively collimated, as a real head-up display is. Do not move them closer without re-deriving that.
-* `readsDepth` and `writesDepth` are both false, so terrain never buries the marks. If they turn out to be occluded on hardware, the next lever is `ModelSortGroupComponent` with a post depth pass, not moving the marks nearer.
-* The Jump To card is billboarded at the same azimuth 1.25 m ahead, so the marks would be drawn over its text. They are hidden while a Jump To is active, which is simpler than sorting them.
-* The physical `-` button toggles the whole display. It is bound to `buttonOptions`, originally on the reasoning that `buttonMenu` is already the physically confirmed `+` beside it, and now confirmed on the headset on 10 September 2026. GameController's Switch Pro names had already misled this project once, over the roll pair, so that inference was worth checking rather than assuming; the same caution applies to any further face-button mapping.
-* The accepted tuning set is: distance `1,000` m; colour `(1.0, 0.66, 0.12)` amber; opacity `0.85`; ring style `outlineRing` with a `filledDisc` alternative; circle diameter `1.5` degrees; ring stroke `0.3` degrees; bar thickness `1.0` degrees; each arm `10` degrees measured from the edge of the gap; gap margin `0.4` degrees either side of the ring. The gap half-angle is derived from the ring, so it always fits whatever circle size is set.
-* Both marks are plain generated geometry with no texture. At the accepted sizes the bar is roughly 34 pixels thick on the original M2 Vision Pro and the ring's stroke roughly 10, which should not need softening. If the edges crawl on hardware, the fix is `StarField`'s soft-edged opacity texture, not more segments.
-
-TODO, if the owner wants it: fade the bar out with altitude, in the way the sky gradient and the star field already fade with air mass. Local horizontal stays well defined at any height, but at 1,000 km the real horizon is 30 degrees below the bar and the mark means progressively less. `StarField.visibility` is the pattern to copy; there is deliberately no altitude term in `HeadUpDisplay` today.
-
-Manual test procedure on the headset:
-
-1. Launch. The ring sits directly ahead, inside the gap in a level horizon bar.
-2. Look around. Both marks stay fixed in the world and do not follow the head.
-3. Push the right stick forward. The ring drops with the nose; the bar stays on the horizon and the ring leaves the gap.
-4. Roll with `X` and `Y`. The bar banks; the ring stays where it is.
-5. Yaw with the right stick. Neither mark moves within the view.
-6. Fly at a building. The marks stay drawn over it.
-7. Press `-`. Both marks disappear. Press again and they return.
-8. Press `+`. The marks hide while the Jump To card is up and return when it finishes.
-9. Climb hard. The bar stays at eye level while the real horizon drops away below it.
-
-Do not start a later milestone merely because the current change makes it convenient.
-
-## Sky: one gradient, driven by air mass
-
-**Status: implemented on 5 September 2026 as a cosmetic change beyond the original brief. The maths is covered by one regression test and by a standalone run, the banding and rebuild-cadence work below was driven by the owner's own headset observations, and the owner confirmed the sky on the original M2 Vision Pro on 10 September 2026 after the Swift 6 move.**
-
-The sky is still one inward-facing unlit sphere centred on the craft, still textured with a one-dimensional gradient in the angle from local up, and still drawn with `faceCulling = .front`. What changed is where the colours come from and how big the sphere is. `SkyDome.swift` holds all of it; `EarthflightTuning` holds the palette.
-
-### Why one dimension is still enough
-
-Seen from any point above a sphere, the ground, the horizon ring and the atmosphere's bright limb are all rotationally symmetric about local up. A circular gradient centred on the nadir and a vertical gradient on the texture are therefore the same picture, at every altitude. The dome does not need a second axis, a shader or a cube map. Note that `MeshResource.generateSphere` maps V linearly to polar angle, and a chord's midpoint bisects the arc, so the gradient stays accurate even where the sphere is coarsely tessellated.
-
-### The one scalar
-
-`SkyAtmosphere.ray` returns the **air mass** along a ray, in units of the sea-level vertical column, plus whether that ray reaches the Earth. Everything altitude dependent falls out of it, and no part of the palette mentions altitude:
-
-* straight up from sea level is 1, and the palette maps 1 to the accepted zenith blue;
-* the sea-level horizon is 34.3, and the palette maps 45 to the accepted pale band;
-* above the Karman line the upward air mass is 0.00001, which the palette renders black;
-* rays that graze the Earth from orbit still cross a long dense path, which is what keeps the thin bright rim;
-* the horizon moves down the sky as the Earth shrinks without anything computing where it is. Rays simply start reaching the ground.
-
-The model is an exponential atmosphere: scale height 8,500 m, top 120,000 m, sphere radius 6,371,000 m. Ellipsoid height is used directly as height above that sphere, which is self-consistent and keeps the WGS84 flattening out of it; flattening moves the horizon by hundredths of a degree, well under one texture row.
-
-Rays that reach the Earth show the sandy terrain-gap fill with the scattered colour laid over it as haze, `1 - exp(-0.1 * airMass)`. The two branches agree at the horizon, because a ray grazing it collects almost as much air as one just above, so the gradient crosses the horizon without a seam at any altitude.
-
-### Measured behaviour
-
-Verified by running the same code standalone on the Mac, not by looking at the headset:
-
-* the march agrees with the closed form `sqrt(pi R H / 2)` for a sea-level horizontal ray to 0.04 per cent;
-* zenith air mass by height: 1.00 at sea level, 0.79 at 2 km, 0.31 at 10 km, 0.095 at 20 km, 0.029 at 30 km, 0.0028 at 50 km, 0.000007 at 100 km;
-* the bright limb spans about 1.8 degrees from 400 km and about 0.15 degrees from 20,000 km, which matches photographs;
-* one 32 by 2,048 gradient costs 2.8 ms of pure arithmetic in a Release build on the Mac.
-
-### Why the sphere now grows
-
-The accepted 9,000,000 metre radius hides the Earth once the craft is far enough out to see the whole globe: at 20,000 km the visible limb is 25,590 km away, outside the dome, so the dome would depth-occlude it. `SkyDome.radiusMeters` therefore returns `max(9,000,000, 1.5 * sqrt(d^2 - R^2))`, the horizon tangent distance being the farthest visible point of the Earth. Below about 3,000 km the fixed radius wins, so low flight renders exactly the accepted geometry. The mesh keeps the fixed radius and the growth is applied as entity scale.
-
-**This is the one part that could fail on hardware.** The accepted build proves the visionOS far plane is at least 9,000 km, not that it is unbounded. If the globe or the sky is clipped at extreme altitude, the far plane is the suspect, not the gradient.
-
-### Rebuilding the texture
-
-**The frame is the throttle, not the threshold.** At most one rebuild starts per scene update, because `update` runs once a frame and the `isRebuilding` flag blocks a second. The height threshold, now 25 m or one part in ten thousand, only stops pointless work while hovering. The first version used 500 m and 1.5 per cent, and that was wrong: measured against the finished texture, climbing 500 m from 1,000 m moved some texels by 63 of the 255 available levels, and the owner saw the sky step every few hundred milliseconds. At 25 m the largest texel jump is 2.0 levels at 1,000 m and below 1 level everywhere above 5,000 m.
-
-That cadence is affordable because a gradient costs about 1 ms in a Release build on the Mac, down from 2.75 ms. `SkyGradient.raysPerRow` is what changed: one ray per row up to 10,000 km, four above. The limb is 1.8 degrees wide from low orbit and still 0.27 degrees from 10,000 km, against 0.088 degrees per row, so averaging buys nothing until it narrows past a row. Above 10,000 km four rays are cheaper anyway, 0.54 ms, because most rays miss the atmosphere and return immediately.
-
-`SkyAtmosphere` and `SkyGradient` are `nonisolated` on purpose: the target sets `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, and the pixels are computed in a `Task.detached` so the march never runs on the render actor. A climb now allocates a fresh 256 KB buffer and CGImage roughly once a frame; that is accepted rather than pooled.
-
-Upload uses `TextureResource.replace(using:options:)`, the CGImage path. Do not switch it to the raw-contents path: see the dragons section for what that did to tile textures. Mipmaps are off because the dome is always magnified, one row covering about a twentieth of a degree.
-
-### Two causes of banding, and what fixed each
-
-The owner reported faint lines in the gradient from the horizon through the mid blues. Measurement separated two causes; the ray march was not one of them, and raising `marchSampleCount` to 256 was tried and correctly reverted. Away from the horizon the march's worst second-to-first difference ratio is 0.67, which is smooth.
-
-* **Slope discontinuities at the palette stops.** Straight lines between stops change slope abruptly, and the eye turns that into a Mach band, which is exactly a line. At ground level the stops at air mass 3, 8 and 20 fall at 71, 83 and 88 degrees from the zenith, and the worst changed the slope of blue against angle by a factor of **8.6**. `SkyGradient.scatteredColour` now joins the stops with a monotone cubic, Fritsch-Carlson tangents and all, which drops the worst ratio to **1.7**. The stops themselves are untouched and are still hit exactly, so every tuned colour appears where it was tuned; the curve between them moves by up to 13 levels, which is the point. Do not go back to straight lines to save fifteen lines of code.
-* **Eight-bit quantisation.** Near the zenith the blue channel held one value for over a hundred rows, a band 10 to 15 degrees wide, about 400 screen pixels. `SkyGradient.dither` adds plus or minus half a level per texel before rounding. That takes the longest flat run in a row-mean profile from **1023 rows to 4**, and the number of distinct values across 2,048 rows from 62 to 1,809, while the row mean still tracks the exact colour to within 0.33 of a level. The offset is a hash of the texel, never a fresh random number, so the pattern is identical in every rebuild and the sky cannot sparkle during a climb. This is also why the texture must stay unmipmapped: mips would average the dither away.
-
-### Deliberate differences from the accepted ground-level sky
-
-* Pale sky is now concentrated in the last 10 to 15 degrees above the horizon rather than spread over 40. That is what a real sky does, but it is a visible change at ground level.
-* Below the horizon the fill reaches sandy within a few degrees instead of fading over 90. Terrain covers that region in normal flight; it shows only through gaps.
-* `EarthflightTuning.skyAirMassColourStops` is the whole palette. Tune there, not in `SkyDome.swift`.
-
-### Stars
-
-**Status: added on 5 September 2026 at the owner's request, after the gradient was physically accepted. The maths is covered by a regression test, the first pass was revised because the owner found the untextured quads visibly square on the headset, and the owner confirmed the star field on the original M2 Vision Pro on 10 September 2026 after the Swift 6 move.**
-
-The owner asked for "a few twinkling white pixels" to stop raw black space feeling empty, and said explicitly that accuracy does not matter. `StarField.swift` is 900 white quads on a sphere at 95 per cent of the sky dome's radius, added as a child of the dome so they inherit its craft-centred position and its altitude-driven scale and can never fall outside it.
-
-Three things are worth keeping:
-
-* **The field is anchored to ECEF, not to the render frame.** `worldFromRenderLocal` reduces to `A * ecefFromRenderLocal`, so anything fixed in render-local jumps in world orientation by up to half a degree at every 50 km rebase, and rotates continuously as the craft flies. The sky gradient is symmetric only about its own up axis, not under an arbitrary tilt, so this rotation shifts it too; it is just smooth enough not to be noticed, unlike a field of pinpoint stars, which would visibly pop. `StarField.earthAnchoredOrientation` writes the render-local-from-ECEF rotation onto the field's parent, which cancels it exactly. The regression test checks that one star direction lands on the same ECEF direction from two very different render frames, because inverting that rotation is the easy mistake.
-* **The sky dome now carries its own rotation too, to current geodetic up.** `SkyDome.update` used to leave the entity at identity orientation, so the gradient's zenith axis silently tracked the render-local frame's own fixed axes, which only match current geodetic up at the point that last set the render origin; up to the 50 km rebase distance away the two differ by about 0.45 degrees, growing continuously and then snapping back to zero at the next rebase. `FlightState.renderLocalFromCraftTangent` gives the craft's current tangent frame in render-local coordinates, independent of heading, pitch and roll, and `SkyDome.update` orients the entity to it. Because the star field is a child of the dome, its own orientation has to cancel the dome's new rotation as well as the render frame's, via `skyOrientation.inverse * earthAnchoredOrientation(...)`, or the stars would be carried by the dome's rotation on top of their own and rotate twice. The regression test compares the same craft position, sky orientation and star direction from two render frames about 50 km apart and requires all three to agree.
-* **Stars fade with the same air mass the gradient uses**, `exp(-zenithAirMass / 0.15)`: 0.001 at sea level, 0.13 at 10 km, 0.53 at 20 km, 0.94 at 40 km, 1 past the Karman line. There is no day, no night and no separate mode. Below 0.004 the whole field is disabled so a thousand transparent quads stay out of ordinary low flight.
-* **Twinkling is done in banks, not per star.** The stars are split across eight meshes whose material opacity breathes on periods of 2.3 to 13.7 seconds. Animating a thousand points individually would need a shader, and visionOS has no `CustomMaterial`. Every star in a bank breathes together, so the base brightness is deliberately high (0.72 plus or minus 0.28); a deeper swing would read as banks rather than as twinkling. Real stars do not twinkle in vacuum at all, and that is fine.
-
-The first pass used untextured quads at 0.060 to 0.160 degrees, and on the headset they were visibly square and about twice the size they wanted to be. Each star now carries one shared 32 by 32 `Opacity` texture: full brightness to seven tenths of the way out, then a smooth shoulder to nothing. Quads are 0.040 to 0.100 degrees, and the dot inside is roughly four fifths of that, so a star is 1.1 to 2.7 pixels against the 2.0 to 5.4 it was.
-
-The texture is mipmapped, deliberately and unlike the sky gradient. A star only a pixel or two across minifies a long way, and without mips it would sample one arbitrary texel and flicker as the head turns. The cost is that the smallest stars sample the falloff's mean, 0.571, so they peak at about 57 per cent white; `starTwinkleBaseBrightness` was raised from 0.72 to 0.80 to compensate. Base plus amplitude must stay at or below 1.
-
-Two consequences that are accepted rather than overlooked. Stars are drawn over the sandy terrain-gap fill, so they can show through a hole in the tiles below the horizon; tiles are opaque and nearer, so they occlude the stars correctly wherever they have loaded. And the fade is global rather than per direction, so stars near the bright limb are not washed out individually; at the altitudes where stars appear that band is only a couple of degrees wide.
-
-`FlightState.realityKitMatrix` and `doubleMatrix` were marked `nonisolated` for this. They are pure casts, and the star field needs them off the render actor.
-
-## Swift 6: where every callback actually runs
-
-**Status: the app target and `earthflightTests` moved to Swift 6 language mode with `SWIFT_STRICT_CONCURRENCY = complete` on 10 September 2026. Both configurations build with no Swift warnings, all 28 tests pass on the paired M2 Vision Pro, and the owner confirmed flight, tiles, the HUD, Jump To and on-device speech recognition on the headset afterwards. `SWIFT_APPROACHABLE_CONCURRENCY = YES` and `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` are unchanged, as are the accepted controller feel, the ECEF precision and transform order, the CGImage texture upload, the atomic readiness-gated LOD handoff and the two-view Cesium selection.**
-
-### The rule that matters before writing any new callback
-
-`SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` infers a closure as `@MainActor` unless something forces otherwise, and that includes one handed to an Objective-C API. The exception is a block parameter the SDK declares `@Sendable`, which is imported nonisolated — that is why the audio tap below carries no check and the notification observers could not simply be asserted. Everywhere else, Swift 6 emits a hard runtime check inside the bridged block thunk where Swift 5 emitted none. A callback the system delivers on some other queue no longer races quietly; it traps in `_dispatch_assert_queue_fail`:
-
-```text
-BUG IN CLIENT OF LIBDISPATCH: Assertion failed:
-Block was expected to execute on queue [com.apple.main-thread (...)]
-```
-
-That is exactly how the Swift 6 move broke Jump To: `SFSpeechRecognizer.requestAuthorization`'s handler is documented as carrying no main-queue guarantee, and it does arrive elsewhere. The code was untouched by the migration. Only enforcement changed.
-
-So, for every Objective-C or system callback: **read its header for the delivery queue before writing it, and record the answer in a comment beside it.** A clean build proves nothing about where a block runs.
-
-### What each callback's contract is, and why
-
-| Callback | Delivery | Expressed as |
-|---|---|---|
-| `SFSpeechRecognizer.requestAuthorization` handler | header: no main-queue guarantee, and it really does arrive elsewhere | `JumpTo.speechAuthorizationStatus` is `nonisolated` |
-| `recognitionTask(with:resultHandler:)` handler | `SFSpeechRecognizer.queue` defaults to the main queue; the app never sets it | inferred main-actor, left as is |
-| `AVAudioNode.installAudioTap` tap block | AVFAudio declares the Swift refinement's block `@Sendable`; it runs on the audio thread | nonisolated, carries no check |
-| GameController element handlers | `GCDevice.h`: `handlerQueue` defaults to main; the app never sets it | inferred main-actor, left as is |
-| `GCControllerDidConnect` / `DidDisconnect` observers | `queue: .main`, so the main thread | `MainActor.assumeIsolated`, which is a *checked* assertion |
-| The five `CesiumBridge` callbacks | main queue: two through `dispatch_async`, three synchronously from `updateTiles` | `NS_SWIFT_UI_ACTOR` on the block parameters |
-| `MaterialParameters.Texture.Sampler.modify` | synchronous on the caller | inferred main-actor, left as is |
-
-`CesiumBridge.tileDidFinishPreparing:` is deliberately **not** `NS_SWIFT_UI_ACTOR`. It takes a mutex and resolves a Cesium promise, both safe from any thread, and claiming the main actor there would be a lie the compiler would then enforce.
-
-### Two boundaries Swift will not let you simply assert
-
-* **The controller connect/disconnect notifications.** `NotificationCenter` declares the observer block `@Sendable` and nonisolated and offers no main-actor-isolated alternative, so a non-Sendable `GCController` cannot cross from it into `SwitchController`. `MainActor.assumeIsolated` does not help: the value crossing is what is diagnosed, not the isolation. The blocks therefore carry nothing but the signal, and `reconcileBinding` re-reads `GCController.controllers()` on the main actor — which `GCController.h` asks callers to "adopt both" with the notifications anyway. Releasing is still decided by identity, comparing `boundController` against that live array.
-* **The audio tap.** The block is `@Sendable`, so it must not touch the main-actor `SFSpeechAudioBufferRecognitionRequest`. The tap copies each buffer, as it always did, and a fresh copy is in its own isolation region and can be sent; an `AsyncStream<AVAudioPCMBuffer>` carries it in order to a main-actor loop that appends. Nothing may be appended after `endAudio`, and a cancelled `AsyncStream` still hands back what it had buffered, so that loop checks cancellation itself.
-
-### Measured compiler and SDK facts, do not re-derive
-
-* **`swiftc -typecheck` does not run region isolation.** "sending ... risks causing data races" is a SIL diagnostic, so a typecheck-only pass reports a false clean bill. Probe with `-emit-sil` or `-c`.
-* **`NotificationCenter.MainActorMessage` traps on a background post.** The typed main-actor notification API compiles cleanly for `GCControllerDidConnect`, but a runtime probe showed it SIGTRAPs when the notification is posted from a background thread. Which thread GameController posts on is unverified, so this route was rejected. Do not "modernise" the observers onto it.
-* **Region isolation cannot check a global-actor-annotated task-group child that suspends.** `group.addTask { @MainActor in ... }` containing any `await` produces "pattern that the region-based isolation checker does not understand how to check. Please file a bug". `JumpTo.captureTranscript` therefore adds plain children that call main-actor methods, which states the same isolation. Recheck that diagnostic before putting the annotation back.
-* **`MainActor.assumeIsolated` is checked, not a suppression.** It succeeds for a `queue: .main` observer whether the notification was posted from the main thread or a background one, and such a post is delivered synchronously when it comes from the main thread. It traps rather than racing if that ever stops being true.
-
-Do not reach for `@unchecked Sendable`, `nonisolated(unsafe)`, `@preconcurrency` or `assumeIsolated(unsafe:)`. There are none in the project, and adding one hides exactly the class of defect this section exists to catch.
-
-### Auditing the whole app
-
-To find every main-actor claim the runtime will check:
+## What this is
+
+A private visionOS app for one original M2 Apple Vision Pro, one Nintendo Switch
+Pro Controller and one owner who runs and repairs it from Xcode. You fly a
+virtual craft through Google's Photorealistic 3D Tiles with a gamepad while your
+head independently controls where you look.
+
+It is a personal instrument, not a product, an SDK or an architecture exercise.
+It is a hobby project, not a mathematical proof.
+
+## The other three files
+
+* **GOTCHAS.md** — hard-won knowledge, by subsystem. Read the relevant section
+  before touching tiles, textures, coordinates, sky, stars, the HUD, Jump To or
+  any Objective-C callback. It exists so you do not repeat an investigation that
+  has already been paid for once.
+* **MILESTONES.md** — what was built, in order, and what is left.
+* **BUILDING.md** — the known-good native build of Cesium Native: pinned commits,
+  toolchain identity, exact commands. Facts, not plans. Load-bearing; change it
+  only when the facts change.
+READ THESE before making any changes.
+
+## How this project likes to be treated
+
+Take the shortest understandable path to a satisfying result on this one device.
+
+Prefer direct code, a few small concrete types, ordinary functions, local state,
+`print`, `assert`/`precondition`/`fatalError`, and force unwraps where the
+project's fixed assumptions make them honest. Crash, fix the defect, relaunch:
+that is an acceptable workflow here.
+
+Be ruthless about product complexity and careful about systems correctness. The
+things that genuinely need care are C++/Swift ownership, threading and actor
+isolation, RealityKit entity and resource lifetime, tile visibility, coordinate
+transforms, floating-point precision, floating-origin rebasing, Google
+attribution, and keeping memory bounded.
+
+### Do not build
+
+No dependency injection, invented protocols, factories, repositories,
+coordinators, service locators, view models, MVVM, TCA or Clean Architecture. No
+generic networking, caching or persistence layers. No CI, analytics, telemetry,
+feature flags or remote configuration. No onboarding, tutorials, settings
+screens, error-presentation systems, retry frameworks or diagnostics dashboards.
+No localisation, multiple profiles, multiple controllers, keyboard or
+hand-tracking input, or custom gestures. No game mechanics, scores, points of
+interest, labels or multiplayer. No reusable framework or SDK extraction. No
+speculative abstraction and no future-proofing.
+
+No third-party Swift packages beyond what Cesium Native genuinely needs in order
+to compile.
+
+Do not add a folder hierarchy to classify a dozen files, and do not create empty
+types or files ahead of the work that needs them.
+
+### Tests are opt-in
+
+`earthflightTests` holds 28 focused regression tests and they earn their place:
+they pin flight invariants, transform round-trips, texture orientation, sky and
+star maths and HUD geometry that would otherwise need the headset to check.
+
+Do not add tests unless asked. When asked, add the smallest focused test to that
+existing target — no second target, no fixtures, no mocking framework. Never
+delete a test that already exists.
+
+### Tuning belongs to the owner
+
+Every owner-editable feel and presentation value lives in
+`EarthflightTuning.swift`, documented in place. That is where tweaking happens.
+There is no settings UI and there will not be one.
+
+Put new tunable constants there, with their units and a one-line reason. Do not
+scatter them back into the code that uses them, do not rename them unasked, and
+never change an accepted value as a side effect of another change. If your
+change needs different tuning, say so and let the owner decide.
+
+## Invariants
+
+* Head direction never steers the craft. The controller owns craft pose; the head
+  owns the view. The combined pose feeds Cesium's tile selection, which is
+  rendering input, not flight input.
+* The craft's position is WGS84 ECEF in double precision. RealityKit only ever
+  sees a metre-scale local frame, which rebases as the craft travels.
+* The system camera is never moved. `earthRoot` moves instead.
+* No physics engine, inertia, lift, drag, gravity, collision or stall. Flight is
+  direct kinematics from controller input and frame time.
+* Google's branding and the credits for currently visible tiles are always on
+  screen.
+* One Cesium selection pipeline. Never a second LOD system.
+
+## The stack, settled
+
+Swift, SwiftUI, one `ImmersiveSpace`, full immersion, `RealityView`, RealityKit,
+exactly one app target. Swift 6 language mode with `SWIFT_STRICT_CONCURRENCY =
+complete`, `SWIFT_APPROACHABLE_CONCURRENCY = YES` and
+`SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`.
+
+Earth data is Google Map Tiles Photorealistic 3D Tiles, straight from Google's
+root tileset. Cesium Native does traversal, view-dependent selection, LOD,
+culling, loading, glTF parsing and cache eviction, but draws nothing; a small
+Objective-C++ bridge hands its decoded glTF to Swift as plain payloads, and
+RealityKit meshes, textures and materials are built from those.
+
+GameController for input, Speech for on-device transcription, MapKit local search
+for spoken places, SwiftUI only for Jump To and attribution.
+
+Deliberately not used: Unity, a custom Metal renderer, Cesium Ion, a separate
+framework target, Google Places, Apple Flyover or any reverse-engineered map
+data, offline mesh exports. The physical device is the only supported
+destination: the simulator does not link, and simulator support is not wanted.
+
+Reopen any of this only with a concrete build, API or measured performance
+blocker — and state the blocker before changing course.
+
+## Where things live
+
+| File | What it holds |
+|---|---|
+| `earthflightApp.swift` | Entry point; launches straight into the immersive space |
+| `ImmersiveView.swift` | The `RealityView`, the per-frame scene update, and how everything is wired together |
+| `FlightState.swift` | Craft pose in double-precision ECEF, controller integration, floating-origin rebasing |
+| `SwitchController.swift` | GameController binding and current input state |
+| `EarthflightTuning.swift` | Every owner-editable constant |
+| `GoogleTileRenderer.swift` | Cesium's selected tiles as RealityKit entities: preparation, publication, retirement, render frame |
+| `CesiumBridge.h` / `.mm` | The Objective-C++ boundary: hosts the Cesium tileset and decodes glTF into flat primitive payloads |
+| `HeadTracking.swift` | Head pose relative to the craft |
+| `SkyDome.swift` | The air-mass sky gradient and its dome |
+| `StarField.swift` | Stars, faded in by air mass |
+| `HeadUpDisplay.swift` | The nose ring and horizon bar |
+| `JumpTo.swift` | The `+` voice teleport: speech, MapKit, elevation, geoid correction |
+| `GoogleAttributionView.swift` | Required Google branding and current credits |
+| `earthflightTests/` | The regression tests |
+| `scripts/` | Native Cesium build, and the toolchain-identity check that runs as a build phase |
+
+## Controller mapping
+
+Apple's face-button property names are positional and promise nothing about the
+glyph printed on a Nintendo controller. This table records what the hardware
+actually does. Verify any new button on the headset rather than inferring it.
+
+| Input | Behaviour |
+|---|---|
+| Left stick up/down | Forward/backward |
+| Left stick left/right | Strafe |
+| Right stick left/right | Yaw |
+| Right stick up/down | Pitch, aircraft-style inverted |
+| Right-stick click | Full orientation reset to the launch attitude |
+| L or R | Ascend; both together adds the vertical boost |
+| ZL or ZR | Descend; both together adds the vertical boost |
+| `X` / `Y` | Roll left / roll right |
+| Bottom face button (`buttonA`) | General speed boost |
+| `+` (`buttonMenu`) | Open voice Jump To |
+| `-` (`buttonOptions`) | Toggle the head-up display |
+
+Inverted pitch means pushing the right stick physically forward pitches the nose
+down. The D-pad, Home and Capture are unused.
+
+## Toolchain transitions
+
+After Xcode or the visionOS SDK changes:
+
+1. do not reuse Cesium Native, vcpkg or other native binaries built by the
+   previous toolchain;
+2. confirm `DEVELOPER_DIR` selects a full Xcode, not
+   `/Library/Developer/CommandLineTools`;
+3. rebuild the pinned native dependencies from source;
+4. rebuild the app;
+5. repeat a headset smoke test before starting anything new;
+6. update BUILDING.md's known-good record.
+
+Do not add compatibility layers for superseded toolchains; support the installed
+one. A device OS update on its own is not a toolchain transition. Neither is a
+Swift language-mode change — but that still needs its own headset smoke test,
+because it can alter runtime behaviour without changing a line of Swift.
+
+## Building and testing
+
+`xcode-select` on this machine points at the Command Line Tools, so every build
+needs `DEVELOPER_DIR` set explicitly:
 
 ```sh
-BIN=".../Build/Products/Release-xros/earthflight.app/earthflight"
-xcrun otool -tvV "$BIN" > rel.s
+export DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer
+
+xcodebuild build -project earthflight.xcodeproj -scheme earthflight \
+  -configuration Debug -destination 'generic/platform=visionOS'
+
+xcodebuild test -project earthflight.xcodeproj -scheme earthflight \
+  -configuration Debug -destination 'platform=visionOS,id=00008112-000264992221A01E'
 ```
 
-then, for each line containing `_swift_task_isCurrentExecutor`, take the nearest preceding label and `xcrun swift-demangle` it. Check every hit that is an Objective-C or system callback against its header. Ignore `__isolated_deallocating_deinit` hits, which are routine. Use the **Release** binary: the Debug build is an `ENABLE_DEBUG_DYLIB` launcher stub and the app code lives in `earthflight.debug.dylib` beside it.
+Build both Debug and Release for `generic/platform=visionOS` after meaningful
+changes. Tests run in Debug on the paired headset (`RuxVision`) and take two to
+four minutes, mostly install time. The simulator cannot link, and
+`build-for-testing` in Release has never worked because `ENABLE_TESTABILITY` is
+off there — do not chase either. BUILDING.md covers the native build.
 
-## Codex working rules
+## Secrets
 
-Before editing:
+The Google API key lives in the ignored `Secrets.xcconfig`;
+`Secrets.example.xcconfig` carries a placeholder. Expose only the one build
+setting the app needs. No backend, proxy, token exchange or account system. A key
+inside a client binary is not secret; restrict it with Google's own controls
+instead of pretending otherwise.
 
-1. Read this file.
-2. Inspect the current repository.
-3. Identify the current milestone.
-4. Preserve all settled decisions.
-5. State any concrete blocker before changing architecture.
+## The headset is the only judge
 
-During editing:
+The agent's device-interaction service does not support visionOS hardware. That
+is a known tooling limitation, not a signing, pairing or project fault. Do not
+probe it repeatedly, do not hunt for an alternative screenshot or accessibility
+route, and do not adjust the project because that service refuses the headset.
 
-* Make the smallest coherent change.
-* Keep unrelated formatting and project-setting churn out of the diff.
-* Do not add tests unless requested. When requested, prefer one focused regression test in the existing target.
-* Do not delete tests that already exist.
-* Do not add dependencies without explaining why the current milestone cannot proceed without them.
-* Do not introduce abstractions in preparation for later milestones.
-* Build after meaningful changes.
-* Use current official documentation when an API name, entitlement, capability or visionOS build requirement is uncertain.
-* Inspect current upstream source when Cesium documentation is insufficient.
-* Prefer evidence from the actual compiler and actual M2 headset over speculation.
+So never claim that controller feel, immersive placement, visual correctness, LOD
+behaviour, attribution position, comfort or performance has been verified. Build,
+then hand the owner a short numbered list of manual checks. The owner is the
+authoritative observer for everything visible or felt.
 
-After editing, report:
+## Working rules
 
-* files changed;
-* project/build settings changed;
-* build destination used;
-* whether the build succeeded;
-* warnings that matter;
-* exact manual checks to perform on the physical Vision Pro;
-* anything that could not be verified without the hardware.
+Before editing, read this file and the relevant part of GOTCHAS.md, look at the
+current code, and preserve the settled decisions.
 
-When physical-headset validation is required, state plainly that the agent's
-device-interaction service does not support visionOS hardware and provide the
-owner with the exact manual checks instead of investigating alternative
-screenshot or hierarchy mechanisms.
+While editing: make the smallest coherent change; keep unrelated formatting and
+project-setting churn out of the diff; when two designs are viable, take the
+simpler reversible one; consult current Apple, Google and Cesium documentation,
+or upstream source, when an API is uncertain. The installed SDK and compiler are
+authoritative — your knowledge cut-off is earlier than they are, so do not
+"correct" current code to match a remembered older API.
 
-Never claim that controller mapping, comfort, visual correctness or device performance has been verified unless it was actually checked on the physical headset.
+Leave comments that explain why: coordinate systems, units, handedness,
+multiplication order, and platform behaviour you had to discover. A future
+session has no other way to learn them.
 
-Do not create Git commits unless explicitly asked.
-
-Each milestone will be executed by a different LLM coding session, so liberally include comments in the code that will materially benefit future sessions if knowledge should be passed forwards.
-
-When two implementations are viable, choose the simpler reversible one. Do not future-proof.
+After editing, report the files changed, any build settings changed, the
+destination used, whether the build succeeded, warnings that matter, the manual
+headset checks the owner should run, and anything you could not verify. Do not
+create Git commits unless asked.

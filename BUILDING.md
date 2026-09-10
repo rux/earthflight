@@ -48,7 +48,7 @@ Verified on 10 September 2026:
 
 * `xcodebuild build` for `generic/platform=visionOS` succeeds in **both Debug and Release** with no Swift warnings. The only remaining compiler warnings are pre-existing: documentation warnings from Cesium's own headers, and `CesiumBridge.mm:319` `-Wunused-getter-return-value`. Both were present before the move; confirmed by rebuilding a stash of the pre-change tree.
 * `xcodebuild test` on the paired physical Apple Vision Pro runs and passes all 28 cases in `earthflightTests`.
-* The owner then confirmed on the headset that flight, tile streaming, the head-up display and its `-` toggle, the sky gradient, the star field, Jump To and on-device speech recognition all work. That is the first run to have exercised every visible subsystem in one sitting, so it also retires the "not seen on the headset" status lines the sky, star-field and head-up-display sections of AGENTS.md had carried.
+* The owner then confirmed on the headset that flight, tile streaming, the head-up display and its `-` toggle, the sky gradient, the star field, Jump To and on-device speech recognition all work. That is the first run to have exercised every visible subsystem in one sitting.
 
 ### The one thing it broke, and why that was the point
 
@@ -61,7 +61,7 @@ Block was expected to execute on queue [com.apple.main-thread (...)]
 
 The cause was `SFSpeechRecognizer.requestAuthorization`'s completion handler. `SFSpeechRecognizer.h` states that "the system does not guarantee the execution of this block on your app's main dispatch queue", and it does arrive on another one. Under `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` the handler closure is inferred `@MainActor`, and **Swift 6 emits a hard runtime check inside the bridged Objective-C block thunk where Swift 5 emitted none**. The handler itself was untouched by the migration; only enforcement changed. It is now a `nonisolated` helper, `JumpTo.speechAuthorizationStatus`.
 
-Confirmed by measurement rather than inference: compiling the same source at `-swift-version 5` and `-swift-version 6` yields one versus three `swift_task_isCurrentExecutor` call sites, and demangling the enclosing symbols pins the extra pair to that handler. AGENTS.md, "Swift 6: where every callback actually runs", holds the resulting rule, the per-callback contracts, and the recipe for sweeping the whole binary for the same fault.
+Confirmed by measurement rather than inference: compiling the same source at `-swift-version 5` and `-swift-version 6` yields one versus three `swift_task_isCurrentExecutor` call sites, and demangling the enclosing symbols pins the extra pair to that handler. GOTCHAS.md, "Swift 6 and actor isolation", holds the resulting rule, the per-callback contracts, and the recipe for sweeping the whole binary for the same fault.
 
 ### `build-for-testing` in Release fails, and always has
 

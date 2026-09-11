@@ -1082,6 +1082,101 @@ struct EarthflightTests {
         #expect(meshes.allSatisfy { !$0.contents.models.isEmpty })
     }
 
+    @Test("Giant mode ramps between exact doublings, and scales the world about the craft")
+    @MainActor
+    func giantModeScalesTheWorldAboutTheCraft() {
+        let duration = EarthflightTuning.giantSizeTransitionSeconds
+        #expect(duration > 0)
+        let frameDuration = 1.0 / 90.0
+        let rampFrames = Int((duration / frameDuration).rounded(.up))
+
+        let giantMode = GiantMode()
+        #expect(giantMode.sizeMultiplier == 1)
+        giantMode.shrink()
+        giantMode.advance(deltaTime: duration)
+        #expect(giantMode.sizeMultiplier == 1)
+
+        // One press ramps rather than stepping, and arrives exactly, so a
+        // settled level is an exact power of two.
+        giantMode.grow()
+        giantMode.advance(deltaTime: frameDuration)
+        #expect(giantMode.sizeMultiplier > 1)
+        #expect(giantMode.sizeMultiplier < 2)
+        for _ in 0..<rampFrames {
+            giantMode.advance(deltaTime: frameDuration)
+        }
+        #expect(giantMode.sizeMultiplier == 2)
+
+        // The ceiling and the floor bound the target, not just the render, and
+        // a frame long enough to cover what is left cannot overshoot either.
+        for _ in 0..<(EarthflightTuning.maximumGiantDoublings + 8) {
+            giantMode.grow()
+        }
+        giantMode.advance(deltaTime: 10)
+        #expect(giantMode.sizeMultiplier ==
+            exp2(Double(EarthflightTuning.maximumGiantDoublings)))
+
+        // Fly first, so the render frame and the craft attitude are both well
+        // away from the launch values the scale is composed against.
+        let flightState = FlightState()
+        let worldFromCraftAtLaunch = flightState.renderLocalFromCraft
+        flightState.leftStick = [0.6, 1]
+        flightState.rightStick = [0.3, -0.2]
+        for _ in 0..<60 {
+            flightState.advance(deltaTime: 1.0 / 60.0)
+        }
+
+        let renderLocalFromCraft = flightState.renderLocalFromCraft
+        let baseline = FlightState.worldFromRenderLocal(
+            worldFromCraftAtLaunch: worldFromCraftAtLaunch,
+            renderLocalFromCraft: renderLocalFromCraft
+        )
+        let giant = FlightState.worldFromRenderLocal(
+            worldFromCraftAtLaunch: worldFromCraftAtLaunch,
+            renderLocalFromCraft: renderLocalFromCraft,
+            worldScale: giantMode.worldScale
+        )
+
+        // The craft stays exactly where it has always been in the immersive
+        // world, which is what keeps the head-up display placed on it honest.
+        // Its position only: the rotation columns now carry the uniform scale,
+        // which is the mode itself rather than a defect.
+        let craftRenderLocal = SIMD4<Double>(flightState.renderLocalPosition, 1)
+        let craftUnderBaseline = baseline * craftRenderLocal
+        let craftUnderGiant = giant * craftRenderLocal
+        #expect(simd_length(craftUnderGiant - craftUnderBaseline) < 1e-8)
+        #expect(simd_length((giant * renderLocalFromCraft).columns.3 -
+            worldFromCraftAtLaunch.columns.3) < 1e-8)
+
+        // A landmark 2 km out keeps its exact direction from the craft, so one
+        // eye at the craft origin sees an unchanged picture, and comes in by
+        // exactly the scale factor, so both eyes together do not.
+        let landmark = SIMD4<Double>(
+            flightState.renderLocalPosition + SIMD3<Double>(2_000, -900, 350),
+            1
+        )
+        let baselineOffset = simd_make_double3(baseline * landmark - craftUnderBaseline)
+        let giantOffset = simd_make_double3(giant * landmark - craftUnderGiant)
+        #expect(simd_length(giantOffset - baselineOffset * giantMode.worldScale) < 1e-9)
+        #expect(simd_length(simd_normalize(giantOffset) -
+            simd_normalize(baselineOffset)) < 1e-12)
+
+        // Coming all the way back down restores the accepted world exactly.
+        for _ in 0..<(EarthflightTuning.maximumGiantDoublings + 8) {
+            giantMode.shrink()
+        }
+        giantMode.advance(deltaTime: 10)
+        #expect(giantMode.sizeMultiplier == 1)
+        #expect(matrixDistance(
+            FlightState.worldFromRenderLocal(
+                worldFromCraftAtLaunch: worldFromCraftAtLaunch,
+                renderLocalFromCraft: renderLocalFromCraft,
+                worldScale: giantMode.worldScale
+            ),
+            baseline
+        ) == 0)
+    }
+
     private func matrixDistance(_ lhs: simd_double4x4, _ rhs: simd_double4x4) -> Double {
         max(
             simd_length(lhs.columns.0 - rhs.columns.0),

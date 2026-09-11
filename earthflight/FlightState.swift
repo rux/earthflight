@@ -548,11 +548,25 @@ final class FlightState {
         return matrix
     }
 
+    /// Render-local -> immersive world: the craft's fixed launch pose in the
+    /// world, followed by the inverse of where the craft currently sits in the
+    /// render frame. Assigning this to `earthRoot` is how the Earth moves under
+    /// a camera that never does.
+    ///
+    /// `worldScale` is giant mode, and it belongs between the two terms rather
+    /// than outside them. Applied there it acts in the craft's own frame, so it
+    /// scales the world about the craft origin: the craft's world position, the
+    /// head-up display placed on it at launch, and every direction seen from it
+    /// are all left exactly as they were. See `GiantMode`.
     static func worldFromRenderLocal(
         worldFromCraftAtLaunch: simd_double4x4,
-        renderLocalFromCraft: simd_double4x4
+        renderLocalFromCraft: simd_double4x4,
+        worldScale: Double = 1
     ) -> simd_double4x4 {
-        worldFromCraftAtLaunch * renderLocalFromCraft.inverse
+        let scale = simd_double4x4(
+            diagonal: SIMD4<Double>(worldScale, worldScale, worldScale, 1)
+        )
+        return worldFromCraftAtLaunch * scale * renderLocalFromCraft.inverse
     }
 
     // Pure casts between the Double planetary maths and RealityKit's Float

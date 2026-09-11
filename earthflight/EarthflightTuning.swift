@@ -105,6 +105,31 @@ nonisolated enum EarthflightTuning {
 
     static let attributionTrailingInsetPoints: Double = 220
 
+    // MARK: - Giant mode
+
+    // The D-pad steps the wearer's size in doublings: up grows, down shrinks.
+    // Zero is the accepted one-to-one world and the floor; this is the ceiling,
+    // and it is a count rather than a multiplier so that every level is an
+    // exact power of two and shrinking always lands back on exactly 1. See
+    // GiantMode for why growing the wearer means shrinking the world, and why
+    // nothing else in the app has to know about it.
+    //
+    // Twelve doublings is 4,096: the eyes effectively span 258 metres, so a
+    // city two kilometres across becomes a half-metre model in front of the
+    // wearer, and twelve presses of D-pad down comes back to baseline. Going
+    // further mostly costs comfort: the world closes in on the wearer's face,
+    // so the ground has to be half a metre times the multiplier below the craft
+    // -- about two kilometres at this ceiling -- before it is even an arm's
+    // length away, and the wearer's own head movement swings Cesium's selection
+    // camera by that much too. Twelve is the accepted ceiling.
+    static let maximumGiantDoublings = 12
+
+    // How long one doubling takes. The size always changes at this rate, so two
+    // quick presses take twice as long and arrive without a pause in the
+    // middle. Set to zero to step instantly, as the release decays do. A
+    // quarter of a second is the accepted value.
+    static let giantSizeTransitionSeconds: Double = 0.25
+
     // MARK: - Head-up display
 
     // Two marks that say where the craft is pointed and where level is: a ring

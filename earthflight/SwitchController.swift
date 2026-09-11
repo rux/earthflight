@@ -29,6 +29,9 @@ final class SwitchController {
     private var isRightTriggerPressed = false
     var onJumpToRequested: (@MainActor () -> Void)?
     var onHeadUpDisplayToggleRequested: (@MainActor () -> Void)?
+    // D-pad up and down: how large the wearer is. See `GiantMode`.
+    var onGrowRequested: (@MainActor () -> Void)?
+    var onShrinkRequested: (@MainActor () -> Void)?
 
     init(flightState: FlightState) {
         self.flightState = flightState
@@ -203,6 +206,27 @@ final class SwitchController {
                 self.onHeadUpDisplayToggleRequested?()
             }
         }
+        // The D-pad's vertical axis is the wearer's own size: up doubles it and
+        // down halves it. Only the press-down transition steps it, so holding a
+        // direction does not run away. Left and right stay unbound.
+        gamepad.dpad.up.pressedChangedHandler = { [weak self] _, _, pressed in
+            guard pressed else {
+                return
+            }
+            Task { @MainActor in
+                guard let self, binding == self.bindingGeneration else { return }
+                self.onGrowRequested?()
+            }
+        }
+        gamepad.dpad.down.pressedChangedHandler = { [weak self] _, _, pressed in
+            guard pressed else {
+                return
+            }
+            Task { @MainActor in
+                guard let self, binding == self.bindingGeneration else { return }
+                self.onShrinkRequested?()
+            }
+        }
 
         print("Switch Pro Controller flight controls ready.")
     }
@@ -250,6 +274,8 @@ final class SwitchController {
         gamepad.rightThumbstickButton?.pressedChangedHandler = nil
         gamepad.buttonMenu.pressedChangedHandler = nil
         gamepad.buttonOptions?.pressedChangedHandler = nil
+        gamepad.dpad.up.pressedChangedHandler = nil
+        gamepad.dpad.down.pressedChangedHandler = nil
     }
 
     @MainActor

@@ -465,6 +465,75 @@ without guessing, which way the left stick will move the craft.
 
 ---
 
+## Giant mode
+
+The D-pad's vertical axis changes how large the wearer is. Nothing about flight,
+the camera or Cesium changes; the whole of it is one uniform scale on
+`earthRoot`, composed inside `FlightState.worldFromRenderLocal`.
+
+* **You cannot move the Vision Pro's eyes, so move the world instead.** The
+  system camera is never touched, and there is no interocular-distance control to
+  reach for. Shrinking the rendered world by `1 / multiplier` is exactly
+  equivalent to holding the eyes apart by `multiplier` times as much, and it is
+  the only lever the platform actually offers.
+* **The scale must act about the craft origin.** It goes between the fixed
+  launch pose and the inverse render-local-from-craft, so it applies in the
+  craft's own frame. Put it outside either term and the craft itself slides
+  through the immersive world as the size changes.
+* **Scaling about a point leaves every direction from that point alone, so
+  Cesium is right without being told anything.** A tile at render-local distance
+  `d` and size `L` is drawn at `d/s` and `L/s`, and `s` cancels: the angular
+  picture from the craft origin is identical and the screen-space error Cesium
+  computed still predicts on-screen pixels exactly. Do not scale
+  `maximumScreenSpaceError`, the viewport dimensions or the geometric error to
+  "compensate". What changes is only what is measured *across* the origin: each
+  eye's 31.5 mm offset, and head parallax. That is the entire effect.
+* The head's offset from the craft reaches Cesium multiplied by the size, because
+  `worldFromRenderLocal.inverse` carries the reciprocal scale. That is correct
+  rather than a leak — a giant's eye really is that far from the craft centre in
+  world metres — but it does mean a half-metre lean moves the selection camera by
+  hundreds of metres at the ceiling. Do not "fix" it by feeding Cesium the craft
+  position instead; the rendering and the selection would then disagree.
+* The sky dome and the star field are children of `earthRoot`, so they shrink
+  with everything else and stay angularly identical at every size. The dome's
+  altitude-driven growth needs no knowledge of this, and the containment of
+  drawn tiles inside the dome is preserved because the scale is uniform.
+* The head-up display and the Jump To card hang off `content`, not `earthRoot`,
+  so they keep their real size. That is right for the display, which is an
+  angular instrument and ignores depth anyway, and the kilometre that collimates
+  it is a world distance, so the marks still do not move when the head does. What
+  does move is the terrain behind them: the wearer's own offset from the craft
+  origin is amplified too, so at large sizes a lean slides near ground across the
+  nose ring. That is a giant's parallax, not a defect. The Jump To card is 1.25 m
+  out, and the owner has confirmed on the headset that it appears in the same
+  place at every size, so it needs no special handling.
+* Float precision improves rather than degrades: every render-local coordinate
+  ends up smaller in world metres than it was.
+* **Flight is deliberately untouched.** No altitude, speed or ceiling
+  compensation. A giant standing at launch height has the ground a millimetre
+  under their eye; the answer is to climb, which is what the tuning file's
+  ceiling comment sizes. Adding a size term to the speed curve would complect the
+  accepted feel with a viewing mode and is not wanted — and it would be solving
+  nothing, because the apparent speed does not change either. The world and the
+  distance travelled through it shrink by the same factor, so the flow across the
+  view is identical at every size. If flight ever *looks* slower when large, the
+  scale has stopped being applied about the craft origin.
+* **Size is stored as a whole count of doublings, not as a multiplier.** That is
+  why there is no reset: shrinking always lands back on exactly 1, the accepted
+  one-to-one world and the floor. A multiplier ceiling that was not a power of
+  two would put the whole ladder off it and never come home.
+* **The ramp between sizes runs at a constant rate in doublings**, one per
+  `EarthflightTuning.giantSizeTransitionSeconds`, not at a constant rate in the
+  multiplier. Size is geometric, so 512 to 1,024 is the same change as 1 to 2 and
+  should take the same time; interpolating the multiplier instead would tear
+  through the small end of a long shrink and crawl at the large end. A press
+  during a ramp only moves the target, so two quick presses take twice as long
+  and arrive without a pause in the middle. The last frame of a ramp assigns the
+  target rather than adding a remainder, which is what keeps a settled level an
+  exact power of two.
+
+---
+
 ## Jump To
 
 `+` starts one voice query; there is no keyboard entry, result list, confirmation

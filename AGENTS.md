@@ -57,7 +57,7 @@ types or files ahead of the work that needs them.
 
 ### Tests are opt-in
 
-`earthflightTests` holds 28 focused regression tests and they earn their place:
+`earthflightTests` holds 29 focused regression tests and they earn their place:
 they pin flight invariants, transform round-trips, texture orientation, sky and
 star maths and HUD geometry that would otherwise need the headset to check.
 
@@ -129,6 +129,7 @@ blocker — and state the blocker before changing course.
 | `SkyDome.swift` | The air-mass sky gradient and its dome |
 | `StarField.swift` | Stars, faded in by air mass |
 | `HeadUpDisplay.swift` | The nose ring and horizon bar |
+| `GiantMode.swift` | How large the wearer is, and therefore how small the world is |
 | `JumpTo.swift` | The `+` voice teleport: speech, MapKit, elevation, geoid correction |
 | `GoogleAttributionView.swift` | Required Google branding and current credits |
 | `earthflightTests/` | The regression tests |
@@ -153,9 +154,10 @@ actually does. Verify any new button on the headset rather than inferring it.
 | Bottom face button (`buttonA`) | General speed boost |
 | `+` (`buttonMenu`) | Open voice Jump To |
 | `-` (`buttonOptions`) | Toggle the head-up display |
+| D-pad up / down | Grow / shrink the wearer; see giant mode below |
 
 Inverted pitch means pushing the right stick physically forward pitches the nose
-down. The D-pad, Home and Capture are unused.
+down. The D-pad's left and right, Home and Capture are unused.
 
 ## Toolchain transitions
 

@@ -11,6 +11,7 @@ struct ImmersiveView: View {
     @State private var attribution = ""
     @State private var sky: SkyDome?
     @State private var headUpDisplay: HeadUpDisplay?
+    @State private var giantMode = GiantMode()
     // Owned here rather than by FlightState: FlightState's own closure below
     // captures `state` (itself) strongly, so FlightState retaining this token
     // would be a self-referential retain cycle that no session end could break.
@@ -69,6 +70,7 @@ struct ImmersiveView: View {
 
             let tracking = headTracking
             let jump = jumpTo
+            let giant = giantMode
             // Compose the accepted render-local -> immersive-world launch placement
             // with launch craft-local -> render-local so the craft pose remains fixed.
             let initialWorldFromRenderLocal = FlightState.doubleMatrix(
@@ -117,13 +119,19 @@ struct ImmersiveView: View {
                     craftOrientation: state.orientation,
                     isJumpToActive: jump.isActive
                 )
+                // Outside the jump branch above, like the sky and the display:
+                // a size change already asked for should still arrive while a
+                // Jump To holds the craft still.
+                giant.advance(deltaTime: event.deltaTime)
 
-                // render-local -> world = fixed world-from-launch-craft followed by
+                // render-local -> world = fixed world-from-launch-craft, giant
+                // mode's uniform scale about the craft origin, then
                 // inverse(current render-local-from-craft). Double is retained until
                 // assigning RealityKit's metre-scale Float Earth-root transform.
                 let worldFromRenderLocalDouble = FlightState.worldFromRenderLocal(
                     worldFromCraftAtLaunch: worldFromCraftAtLaunch,
-                    renderLocalFromCraft: state.renderLocalFromCraft
+                    renderLocalFromCraft: state.renderLocalFromCraft,
+                    worldScale: giant.worldScale
                 )
                 let worldFromRenderLocal = FlightState.realityKitMatrix(
                     worldFromRenderLocalDouble
@@ -195,6 +203,8 @@ struct ImmersiveView: View {
             let controller = SwitchController(flightState: flightState)
             controller.onJumpToRequested = { jumpTo.start() }
             controller.onHeadUpDisplayToggleRequested = { headUpDisplay?.toggle() }
+            controller.onGrowRequested = { giantMode.grow() }
+            controller.onShrinkRequested = { giantMode.shrink() }
             switchController = controller
             controller.start()
             await headTracking.start()

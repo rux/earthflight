@@ -17,9 +17,8 @@ It is a hobby project, not a mathematical proof.
   any Objective-C callback. It exists so you do not repeat an investigation that
   has already been paid for once.
 * **/**docs/MILESTONES.md** — what was built, in order, and what is left.
-* **/**docs/BUILDING.md** — the known-good native build of Cesium Native: pinned commits,
-  toolchain identity, exact commands. Facts, not plans. Load-bearing; change it
-  only when the facts change.
+* **/**docs/BUILDING.md** — how to build from scratch: the known-good toolchain,
+  pinned commits and exact commands. Instructions, not history; keep it that way.
 READ THESE before making any changes.
 
 ## How this project likes to be treated
@@ -170,7 +169,7 @@ After Xcode or the visionOS SDK changes:
 3. rebuild the pinned native dependencies from source;
 4. rebuild the app;
 5. repeat a headset smoke test before starting anything new;
-6. update BUILDING.md's known-good record.
+6. update BUILDING.md's known-good toolchain table.
 
 Do not add compatibility layers for superseded toolchains; support the installed
 one. A device OS update on its own is not a toolchain transition. Neither is a
@@ -183,7 +182,7 @@ because it can alter runtime behaviour without changing a line of Swift.
 needs `DEVELOPER_DIR` set explicitly:
 
 ```sh
-export DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 
 xcodebuild build -project earthflight.xcodeproj -scheme earthflight \
   -configuration Debug -destination 'generic/platform=visionOS'

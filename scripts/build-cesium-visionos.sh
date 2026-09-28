@@ -16,7 +16,7 @@ source "$earthflight_root/scripts/native-toolchain-manifest.sh"
 # the bare command-line tools). Otherwise resolve whichever full Xcode is
 # currently selected via `xcode-select`, and only fall back to scanning
 # /Applications when nothing is selected — never silently prefer one
-# particular Xcode installation (e.g. Xcode-beta.app) over another.
+# Xcode installation over another.
 is_full_xcode() {
     [[ -x "$1/usr/bin/xcodebuild" && "$1" != "/Library/Developer/CommandLineTools" ]]
 }

@@ -316,7 +316,7 @@ public:
         }
         if (!payload.empty()) request.HTTPBody = [NSData dataWithBytes:payload.data() length:payload.size()];
         auto assetRequest = std::make_shared<AppleAssetRequest>(verb, url, std::move(requestHeaders));
-        [[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
             NSHTTPURLResponse *http = [response isKindOfClass:NSHTTPURLResponse.class] ? (NSHTTPURLResponse *)response : nil;
             if (!http) {
                 NSLog(@"Google tile request failed: domain=%@ code=%ld", error.domain ?: @"unknown", (long)error.code);
@@ -325,7 +325,8 @@ public:
             }
             assetRequest->setResponse(std::make_shared<AppleAssetResponse>(http ?: [[NSHTTPURLResponse alloc] init], data ?: [NSData data]));
             promise.resolve(assetRequest);
-        }].resume;
+        }];
+        [task resume];
         return future;
     }
     void tick() noexcept override {}

@@ -240,7 +240,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
-				HEADER_SEARCH_PATHS = (
+				SYSTEM_HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/build/cesium-visionos/install/include",
 					"$(PROJECT_DIR)/build/cesium-visionos/vcpkg_installed/arm64-visionos/include",
@@ -328,7 +328,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
-				HEADER_SEARCH_PATHS = (
+				SYSTEM_HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/build/cesium-visionos/install/include",
 					"$(PROJECT_DIR)/build/cesium-visionos/vcpkg_installed/arm64-visionos/include",

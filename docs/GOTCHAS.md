@@ -594,9 +594,10 @@ or "did you mean".
   the pinned Cesium/vcpkg commits against the native build manifest and fails with
   the exact rebuild command if anything is stale. If it fires, rebuild the native
   dependencies rather than working around the check.
-* Remaining expected compiler warnings: documentation warnings from Cesium's own
-  headers, and one `-Wunused-getter-return-value` in `CesiumBridge.mm`. Anything
-  else is yours.
+* The build has no compiler warnings; any warning is new and yours. Cesium's and
+  vcpkg's headers are in `SYSTEM_HEADER_SEARCH_PATHS` so their doc-comment
+  mistakes stay silent. Moving them back to `HEADER_SEARCH_PATHS` brings those
+  warnings back.
 * BUILDING.md holds the pinned commits, toolchain identity, the merged
   `libEarthflightAbseil.a` explanation and the full commands. Read it before
   touching the native build; it was expensive.

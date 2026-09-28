@@ -75,4 +75,4 @@ After a new Xcode or SDK: rebuild the native dependencies, rebuild the app, run 
 
 * The visionOS Simulator cannot link: the native libraries are built only for devices.
 * `build-for-testing` fails in Release, because `ENABLE_TESTABILITY` is off there and `@testable import earthflight` cannot resolve. Run tests in Debug.
-* Expected compiler warnings: documentation warnings from Cesium's headers, and `-Wunused-getter-return-value` at `CesiumBridge.mm:319`. Anything else is new.
+* The app builds with no compiler warnings. Cesium's and vcpkg's headers are included through `SYSTEM_HEADER_SEARCH_PATHS`, which keeps warnings from their doc comments out of the build.

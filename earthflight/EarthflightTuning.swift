@@ -50,7 +50,7 @@ nonisolated enum EarthflightTuning {
     static let maximumLowAltitudeVerticalSpeedMetersPerSecond: Double = 100
     static let highAltitudeVerticalSpeedThresholdMeters: Double = 250
     static let highAltitudeExcessSquaredSpeedFactor: Double = 0.0015
-    static let maximumVerticalSpeedMetersPerSecond: Double = 3_000
+    static let maximumVerticalSpeedMetersPerSecond: Double = 9_000
 
     // The one flight ceiling. It exists because RealityKit's render-local
     // positions are Float: one unit in the last place is 47 metres out here, and
@@ -81,7 +81,7 @@ nonisolated enum EarthflightTuning {
     // Cesium refines until projected geometric error is below this many pixels.
     // Higher values make Cesium drop to coarser distant LODs earlier; lower
     // values preserve more detail. Nearby tiles still refine from projected error.
-    static let maximumScreenSpaceError: Double = 24
+    static let maximumScreenSpaceError: Double = 16
     static let maximumSimultaneousTileLoads: UInt32 = 8
 
     // Cesium's transient in-memory cache only, not persistent storage. 1 GiB

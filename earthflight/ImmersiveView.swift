@@ -5,7 +5,7 @@ import simd
 
 struct ImmersiveView: View {
     @State private var flightState = FlightState()
-    @State private var switchController = SwitchController()
+    @State private var gamepad = Gamepad()
     @State private var headTracking = HeadTracking()
     @State private var jumpTo = JumpTo()
     @State private var giantMode = GiantMode()
@@ -19,7 +19,7 @@ struct ImmersiveView: View {
     var body: some View {
         RealityView { content, attachments in
             let state = flightState
-            let controller = switchController
+            let controller = gamepad
             let tracking = headTracking
             let jump = jumpTo
             let giant = giantMode
@@ -159,12 +159,12 @@ struct ImmersiveView: View {
         }
         .handlesGameControllerEvents(matching: .gamepad)
         .task {
-            switchController.onJumpToRequested = { jumpTo.start() }
-            switchController.onHeadUpDisplayToggleRequested = { headUpDisplay?.toggle() }
-            switchController.onViewResetRequested = { flightState.resetView() }
-            switchController.onGrowRequested = { giantMode.grow() }
-            switchController.onShrinkRequested = { giantMode.shrink() }
-            switchController.start()
+            gamepad.onJumpToRequested = { jumpTo.start() }
+            gamepad.onHeadUpDisplayToggleRequested = { headUpDisplay?.toggle() }
+            gamepad.onViewResetRequested = { flightState.resetView() }
+            gamepad.onGrowRequested = { giantMode.grow() }
+            gamepad.onShrinkRequested = { giantMode.shrink() }
+            gamepad.start()
             await headTracking.start()
         }
         .onDisappear {
@@ -192,7 +192,7 @@ struct ImmersiveView: View {
     /// repeat.
     private func endSession() {
         sceneUpdateSubscription = nil
-        switchController.stop()
+        gamepad.stop()
         headTracking.stop()
         jumpTo.cancel()
         sky?.stop()

@@ -2,10 +2,11 @@
 
 ## What this is
 
-A private visionOS app for one original M2 Apple Vision Pro, one Nintendo Switch
-Pro Controller and one owner who runs and repairs it from Xcode. You fly a
-virtual craft through Google's Photorealistic 3D Tiles with a gamepad while your
-head independently controls where you look.
+A private visionOS app for one original M2 Apple Vision Pro, one gamepad and one
+owner who runs and repairs it from Xcode. You fly a virtual craft through
+Google's Photorealistic 3D Tiles with the gamepad while your head independently
+controls where you look. It was built around a Nintendo Switch Pro Controller,
+but any controller GameController offers as an extended gamepad should work.
 
 It is a personal instrument, not a product, an SDK or an architecture exercise.
 It is a hobby project, not a mathematical proof.
@@ -120,7 +121,7 @@ blocker — and state the blocker before changing course.
 | `earthflightApp.swift` | Entry point; launches straight into the immersive space |
 | `ImmersiveView.swift` | The `RealityView`, the per-frame scene update, and how everything is wired together |
 | `FlightState.swift` | Craft pose in double-precision ECEF, controller integration, floating-origin rebasing |
-| `SwitchController.swift` | GameController binding and current input state |
+| `Gamepad.swift` | GameController binding and current input state |
 | `EarthflightTuning.swift` | Every owner-editable constant |
 | `GoogleTileRenderer.swift` | Cesium's selected tiles as RealityKit entities: preparation, publication, retirement, render frame |
 | `CesiumBridge.h` / `.mm` | The Objective-C++ boundary: hosts the Cesium tileset and decodes glTF into flat primitive payloads |
@@ -137,9 +138,12 @@ blocker — and state the blocker before changing course.
 
 ## Controller mapping
 
-Apple's face-button property names are positional and promise nothing about the
-glyph printed on a Nintendo controller. This table records what the hardware
-actually does. Verify any new button on the headset rather than inferring it.
+GameController's extended-gamepad profile is the same for every controller it
+supports. The face buttons are named by position in a fixed diamond — `buttonA`
+bottom, `buttonB` right, `buttonX` left, `buttonY` top — whatever is printed on
+them, and the two menu buttons by role. So the mapping is stated by position and
+role, with the Switch Pro's labels, the only controller tried on the headset.
+Verify any new button on the headset rather than inferring it.
 
 | Input | Behaviour |
 |---|---|
@@ -148,16 +152,21 @@ actually does. Verify any new button on the headset rather than inferring it.
 | Right stick left/right | Yaw |
 | Right stick up/down | Pitch, aircraft-style inverted |
 | Right-stick click | Full orientation reset to the launch attitude |
-| L or R | Ascend; both together adds the vertical boost |
-| ZL or ZR | Descend; both together adds the vertical boost |
-| `X` / `Y` | Roll left / roll right |
+| Either shoulder button (L, R) | Ascend; both together adds the vertical boost |
+| Either trigger (ZL, ZR) | Descend; both together adds the vertical boost |
+| Left / top face button (`buttonX` / `buttonY`) | Roll left / roll right |
 | Bottom face button (`buttonA`) | General speed boost |
-| `+` (`buttonMenu`) | Open voice Jump To |
-| `-` (`buttonOptions`) | Toggle the head-up display |
+| Primary menu button (`buttonMenu`, `+`) | Open voice Jump To |
+| Secondary menu button (`buttonOptions`, `-`) | Toggle the head-up display |
 | D-pad up / down | Grow / shrink the wearer; see giant mode below |
 
+On an Xbox controller the shoulder buttons, triggers and menu buttons should be
+LB/RB, LT/RT, Menu and View; on a PlayStation controller L1/R1, L2/R2, Options
+and Create. Neither has been tried.
+
 Inverted pitch means pushing the right stick physically forward pitches the nose
-down. The D-pad's left and right, Home and Capture are unused.
+down. The D-pad's left and right, the right face button, the left-stick click and
+the Home button are unused.
 
 ## Toolchain transitions
 

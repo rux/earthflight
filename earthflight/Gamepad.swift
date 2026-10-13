@@ -1,14 +1,13 @@
 import Foundation
 import GameController
 
-/// The bound Switch Pro Controller. The sticks and held buttons are read once a
-/// frame through `currentInput`; the one-shot buttons call their actions when
-/// pressed.
-///
-/// GameController's face-button names are positional and say nothing about the
-/// glyphs printed on a Nintendo controller. The mapping here was found on the
-/// hardware, not inferred.
-final class SwitchController {
+/// The bound gamepad: the first controller GameController offers with the
+/// extended-gamepad profile. Earthflight was built around a Switch Pro, but the
+/// profile names every element by position or role, never by the label printed
+/// on it, so an Xbox or PlayStation controller maps the same way. The sticks and
+/// held buttons are read once a frame through `currentInput`; the one-shot
+/// buttons call their actions when pressed.
+final class Gamepad {
     var onJumpToRequested: (@MainActor () -> Void)?
     var onHeadUpDisplayToggleRequested: (@MainActor () -> Void)?
     var onViewResetRequested: (@MainActor () -> Void)?
@@ -76,16 +75,18 @@ final class SwitchController {
         guard let gamepad = boundController?.extendedGamepad else {
             return nil
         }
-        // L or R climbs, ZL or ZR descends; both of a pair adds the boost.
+        // Either shoulder button climbs and either trigger descends; both of a
+        // pair adds the boost.
         let climbing = gamepad.leftShoulder.isPressed || gamepad.rightShoulder.isPressed
         let descending = gamepad.leftTrigger.isPressed || gamepad.rightTrigger.isPressed
         return FlightInput(
             leftStick: Self.deadZoned(gamepad.leftThumbstick),
             rightStick: Self.deadZoned(gamepad.rightThumbstick),
             vertical: (climbing ? 1 : 0) - (descending ? 1 : 0),
-            // On the Switch Pro, `buttonX` rolls left and `buttonY` rolls right.
+            // The face buttons are a fixed diamond by position, whatever their
+            // labels: A bottom, B right, X left, Y top. The left one rolls left
+            // and the top one rolls right.
             roll: (gamepad.buttonY.isPressed ? 1 : 0) - (gamepad.buttonX.isPressed ? 1 : 0),
-            // The bottom face button.
             isBoosting: gamepad.buttonA.isPressed,
             isVerticalBoosting:
                 (gamepad.leftShoulder.isPressed && gamepad.rightShoulder.isPressed) ||
@@ -116,7 +117,8 @@ final class SwitchController {
         boundController = controller
         print("Controller connected: vendor=\(controller.vendorName ?? "unknown"), category=\(controller.productCategory)")
 
-        // `buttonMenu` is the physical +, and `buttonOptions` the - beside it.
+        // `buttonMenu` is the primary menu button and `buttonOptions` the
+        // secondary one: + and - on a Switch Pro.
         gamepad.buttonMenu.pressedChangedHandler = { [weak self] _, _, pressed in
             if pressed { self?.onJumpToRequested?() }
         }

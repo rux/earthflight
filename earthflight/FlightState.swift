@@ -55,10 +55,10 @@ private struct ReleaseDecay {
                 output[axis] = input[axis]
                 fallRate[axis] = abs(input[axis]) / durationSeconds
             } else {
-                // A let-go Switch Pro stick rebounds past centre, as far as +0.62
-                // after a -1.0 strafe. A rebound weaker than the fade so far is
-                // ignored like any other smaller input, so it can neither kick
-                // the craft the wrong way nor cut the fade short.
+                // A let-go stick can rebound past centre; the Switch Pro's went
+                // as far as +0.62 after a -1.0 strafe. A rebound weaker than the
+                // fade so far is ignored like any other smaller input, so it can
+                // neither kick the craft the wrong way nor cut the fade short.
                 output[axis] = output[axis] < 0 ? -fading : fading
             }
         }

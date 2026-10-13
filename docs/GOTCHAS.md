@@ -331,11 +331,10 @@ The feel is accepted. These are the shapes that produce it.
 * Right-stick click is a hard orientation reset to the launch heading, pitch and
   roll. It preserves geographic position and movement input, and clears the
   steering tail; a reset that immediately turned back off level would be wrong.
-* The sticks and held buttons are **read once a frame** by
-  `SwitchController.currentInput` and reach `FlightState.advance` as a
-  `FlightInput` value. `nil` means no controller, and drops every fade: a
-  controller that has gone can no longer report a release. Only the one-shot
-  buttons use handlers. Handlers that deferred their writes through a `Task`
+* The sticks and held buttons are **read once a frame** by `Gamepad.currentInput`
+  and reach `FlightState.advance` as a `FlightInput` value. `nil` means no
+  controller, and drops every fade: a controller that has gone can no longer
+  report a release. Only the one-shot buttons use handlers. Handlers that deferred their writes through a `Task`
   needed a binding-generation counter to stop a stale write landing after a
   disconnect; polling cannot produce one.
 * The dead zone is rescaled, so response rises from zero at its edge rather than
@@ -353,8 +352,8 @@ The feel is accepted. These are the shapes that produce it.
   hand just follows the hand. Fading from the strongest sample instead made a
   slow release kick back to nearly full turn rate as it reached centre — a bump
   of a few degrees — and it let the spring rebound through for a frame.
-* The Switch Pro stick rebounds past centre when let go, as far as +0.62 after a
-  -1.0 strafe. A rebound weaker than the fade so far is ignored like any other
+* A let-go stick can rebound past centre: the Switch Pro's went as far as +0.62
+  after a -1.0 strafe. A rebound weaker than the fade so far is ignored like any other
   smaller input, so it cannot reverse the fade.
 * Button roll is deliberately unaffected by release decay.
 

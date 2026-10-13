@@ -240,11 +240,6 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
-				SYSTEM_HEADER_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/build/cesium-visionos/install/include",
-					"$(PROJECT_DIR)/build/cesium-visionos/vcpkg_installed/arm64-visionos/include",
-				);
 				INFOPLIST_FILE = "$(TARGET_NAME)/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Earthflight;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Earthflight listens for a spoken destination when you press +.";
@@ -310,6 +305,11 @@
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 6.0;
+				SYSTEM_HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/build/cesium-visionos/install/include",
+					"$(PROJECT_DIR)/build/cesium-visionos/vcpkg_installed/arm64-visionos/include",
+				);
 				TARGETED_DEVICE_FAMILY = 7;
 			};
 			name = Debug;
@@ -328,11 +328,6 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
-				SYSTEM_HEADER_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/build/cesium-visionos/install/include",
-					"$(PROJECT_DIR)/build/cesium-visionos/vcpkg_installed/arm64-visionos/include",
-				);
 				INFOPLIST_FILE = "$(TARGET_NAME)/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Earthflight;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Earthflight listens for a spoken destination when you press +.";
@@ -398,6 +393,11 @@
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 6.0;
+				SYSTEM_HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/build/cesium-visionos/install/include",
+					"$(PROJECT_DIR)/build/cesium-visionos/vcpkg_installed/arm64-visionos/include",
+				);
 				TARGETED_DEVICE_FAMILY = 7;
 			};
 			name = Release;

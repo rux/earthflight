@@ -1,6 +1,6 @@
 # Building Earthflight
 
-Earthflight builds only for a physical Apple Vision Pro. It links Cesium Native as static libraries built from source for visionOS arm64.
+Earthflight builds only for a physical Apple Vision Pro, VisionOS 27+ is the target. It links Cesium Native as static libraries built from source for visionOS arm64.
 
 ## Known-good toolchain
 

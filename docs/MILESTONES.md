@@ -38,7 +38,5 @@ rejected.
   with air mass. Local horizontal stays well defined at any height, but at
   1,000 km the true horizon is 30 degrees below the bar and the mark means less.
   `StarField.visibility` is the pattern to copy.
-* 3Dconnexion SpaceMouse support — a proper six-axis controller for a
-  six-degree-of-freedom world. This is a long-standing wish, not a plan.
 
 Do not start any of these because the change in hand makes it convenient.

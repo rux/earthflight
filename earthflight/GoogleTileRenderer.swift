@@ -3,31 +3,32 @@ import UIKit
 import Metal
 import simd
 
+/// Cesium's tiles as RealityKit entities. A tile is built while Cesium waits,
+/// then kept hidden until Cesium selects it. Each update's selection is shown
+/// in one step, and only once every tile in it is ready, so two levels of
+/// detail never overlap and a half-loaded area never opens a hole.
 @MainActor
 final class GoogleTileRenderer {
     let earthRoot = Entity()
+
     private struct AnchoredEntity {
         let entity: Entity
         let ecefFromPrimitiveLocal: simd_double4x4
     }
 
-    private final class TileEntities {
-        // Starts disabled so a tile still being prepared is never a candidate
-        // for retirement, and so nothing empty is ever briefly in the scene.
-        let container: Entity = {
-            let container = Entity()
-            container.isEnabled = false
-            return container
-        }()
-        var anchoredEntities: [AnchoredEntity] = []
-        var isPrepared = false
-        // The update on which Cesium last selected this tile. Retirement is the
-        // difference between what is drawn and what was selected just now.
-        var lastSelectedUpdate = 0
+    private struct Tile {
+        /// A child of `earthRoot`, enabled exactly while the tile is shown.
+        let container: Entity
+        let primitives: [AnchoredEntity]
     }
 
-    private var tileEntitiesByIdentifier: [String: TileEntities] = [:]
-    private var currentUpdate = 0
+    private var tiles: [UInt64: Tile] = [:]
+    /// Tiles whose RealityKit resources are still being built. A tile freed in
+    /// the meantime leaves this set and must not be installed afterwards.
+    private var tilesBeingPrepared: Set<UInt64> = []
+    /// What Cesium has selected so far in the current update.
+    private var selectedTiles: Set<UInt64> = []
+    private var shownTiles: Set<UInt64> = []
     private var renderLocalFromEcef: simd_double4x4
 
     init(renderLocalFromEcef: simd_double4x4) {
@@ -36,187 +37,125 @@ final class GoogleTileRenderer {
 
     func setRenderFrame(renderLocalFromEcef: simd_double4x4) {
         self.renderLocalFromEcef = renderLocalFromEcef
-        for tileEntities in tileEntitiesByIdentifier.values {
-            for anchoredEntity in tileEntities.anchoredEntities {
-                applyCurrentPlacement(to: anchoredEntity)
+        for tile in tiles.values {
+            for primitive in tile.primitives {
+                place(primitive)
             }
         }
     }
 
-    /// Called once per scene update, before the tiles selected by that update
-    /// are shown, so the atomic handoff can tell the two sets apart.
-    func beginUpdate() {
-        currentUpdate &+= 1
+    /// Called once per scene update, before Cesium reports that update's
+    /// selection.
+    func beginSelection() {
+        selectedTiles.removeAll(keepingCapacity: true)
     }
 
-    /// Publish the complete installed selection and retire its predecessors as
-    /// one uninterrupted main-actor scene change. Prepared containers remain
-    /// attached but disabled until this handoff, so REPLACE LODs never overlap
-    /// merely because their installations completed at different times.
-    func publishSelectedAndRetireOutgoing() {
-        for tileEntities in tileEntitiesByIdentifier.values
-        where tileEntities.isPrepared
-            && tileEntities.lastSelectedUpdate == currentUpdate {
-            tileEntities.container.isEnabled = true
-        }
-        for (tileIdentifier, tileEntities) in tileEntitiesByIdentifier
-        where tileEntities.container.isEnabled
-            && tileEntities.lastSelectedUpdate != currentUpdate {
-            hide(tileIdentifier: tileIdentifier)
-        }
+    func markSelected(tileIdentifier: UInt64) {
+        assert(tiles[tileIdentifier] != nil, "Cesium selected a tile RealityKit has not built")
+        selectedTiles.insert(tileIdentifier)
     }
 
-    func show(tileIdentifier: String) {
-        guard let tileEntities = tileEntitiesByIdentifier[tileIdentifier],
-              tileEntities.isPrepared else {
-            assertionFailure("Cesium selected tile before RealityKit preparation completed")
-            return
+    /// Shows this update's selection and hides everything else, as one
+    /// main-actor change with nothing in between.
+    func showSelection() {
+        for tileIdentifier in shownTiles.subtracting(selectedTiles) {
+            tiles[tileIdentifier]?.container.isEnabled = false
         }
-        tileEntities.lastSelectedUpdate = currentUpdate
+        for tileIdentifier in selectedTiles.subtracting(shownTiles) {
+            tiles[tileIdentifier]?.container.isEnabled = true
+        }
+        shownTiles = selectedTiles
     }
 
-    /// Starts from Cesium's load-thread preparation callback, before the tile
-    /// can become selectable. The bridge resolves Cesium's preparation future
-    /// only after this method reports complete success or failure.
-    func prepare(primitives: [CesiumPrimitivePayload], for tileIdentifier: String) {
-        guard tileEntitiesByIdentifier[tileIdentifier] == nil else {
-            CesiumBridge.tileDidFinishPreparing(tileIdentifier, succeeded: false)
-            return
-        }
-        let tileEntities = TileEntities()
-        tileEntitiesByIdentifier[tileIdentifier] = tileEntities
-
+    /// Builds a tile's entities for Cesium, which waits on
+    /// `CesiumBridge.tileDidFinishPreparing` before it may select the tile.
+    func prepare(tileIdentifier: UInt64, primitives: [CesiumPrimitivePayload]) {
+        tilesBeingPrepared.insert(tileIdentifier)
         Task {
-            await prepare(
-                primitives: primitives,
-                for: tileIdentifier,
-                tileEntities: tileEntities
-            )
-        }
-    }
-
-    func hide(tileIdentifier: String) {
-        tileEntitiesByIdentifier[tileIdentifier]?.container.isEnabled = false
-    }
-
-    private func prepare(
-        primitives: [CesiumPrimitivePayload],
-        for tileIdentifier: String,
-        tileEntities: TileEntities
-    ) async {
-        var succeeded = false
-        defer {
-            CesiumBridge.tileDidFinishPreparing(tileIdentifier, succeeded: succeeded)
-        }
-
-        var entities: [AnchoredEntity] = []
-        for payload in primitives {
-            if let entity = await makeEntity(
-                from: payload
-            ) {
-                entities.append(entity)
+            var entities: [AnchoredEntity] = []
+            for payload in primitives {
+                if let entity = await makeEntity(from: payload) {
+                    entities.append(entity)
+                }
             }
+            // A tile with a primitive missing would cover its ground only in
+            // part, so that counts as failure.
+            guard tilesBeingPrepared.remove(tileIdentifier) != nil,
+                  entities.count == primitives.count else {
+                CesiumBridge.tileDidFinishPreparing(tileIdentifier, succeeded: false)
+                return
+            }
+            let container = Entity()
+            container.isEnabled = false
+            for primitive in entities {
+                // Placed with the render frame current now, not when building
+                // started: a rebase or a Jump To may have happened since.
+                place(primitive)
+                container.addChild(primitive.entity)
+            }
+            earthRoot.addChild(container)
+            tiles[tileIdentifier] = Tile(container: container, primitives: entities)
+            CesiumBridge.tileDidFinishPreparing(tileIdentifier, succeeded: true)
         }
-        // Partial construction is failure, not covering geometry. Cesium keeps
-        // the replacement future unresolved until this decision is known.
-        guard !primitives.isEmpty,
-              entities.count == primitives.count,
-              tileEntitiesByIdentifier[tileIdentifier] === tileEntities else {
-            tileEntitiesByIdentifier.removeValue(forKey: tileIdentifier)
-            return
-        }
-
-        for anchoredEntity in entities {
-            // Resource generation may span a rebase. Placement deliberately uses
-            // the renderer's latest frame only at main-actor installation time.
-            applyCurrentPlacement(to: anchoredEntity)
-            tileEntities.container.addChild(anchoredEntity.entity)
-        }
-        tileEntities.anchoredEntities = entities
-        tileEntities.isPrepared = true
-        // Preparation may attach resources, but it must not publish them before
-        // Cesium selects the tile. The latest render frame is applied above.
-        tileEntities.container.isEnabled = false
-        earthRoot.addChild(tileEntities.container)
-        succeeded = true
     }
 
-    func remove(tileIdentifier: String) {
-        guard let tileEntities = tileEntitiesByIdentifier.removeValue(forKey: tileIdentifier) else {
-            return
-        }
-        tileEntities.container.removeFromParent()
+    func remove(tileIdentifier: UInt64) {
+        tilesBeingPrepared.remove(tileIdentifier)
+        selectedTiles.remove(tileIdentifier)
+        shownTiles.remove(tileIdentifier)
+        tiles.removeValue(forKey: tileIdentifier)?.container.removeFromParent()
     }
 
-    private func makeEntity(
-        from payload: CesiumPrimitivePayload
-    ) async -> AnchoredEntity? {
+    private func place(_ primitive: AnchoredEntity) {
+        // primitive-local -> ECEF -> current render-local, in Double metres,
+        // cast to Float only once composed.
+        primitive.entity.transform = Transform(
+            matrix: simd_float4x4(renderLocalFromEcef * primitive.ecefFromPrimitiveLocal)
+        )
+    }
+
+    private func makeEntity(from payload: CesiumPrimitivePayload) async -> AnchoredEntity? {
+        // The bridge has already checked the shapes and that every index is in
+        // range.
         let positionFloats = floats(from: payload.positions)
         let uvFloats = floats(from: payload.textureCoordinates)
-        let indices = uint32s(from: payload.indices)
-
-        guard positionFloats.count.isMultiple(of: 3),
-              uvFloats.count.isMultiple(of: 2),
-              positionFloats.count / 3 == uvFloats.count / 2,
-              indices.count.isMultiple(of: 3) else {
-            print("Google RealityKit primitive skipped: malformed bridge payload")
-            return nil
-        }
-
         let positions = stride(from: 0, to: positionFloats.count, by: 3).map {
             SIMD3(positionFloats[$0], positionFloats[$0 + 1], positionFloats[$0 + 2])
         }
         let textureCoordinates = stride(from: 0, to: uvFloats.count, by: 2).map {
             SIMD2(uvFloats[$0], uvFloats[$0 + 1])
         }
-        guard indices.allSatisfy({ Int($0) < positions.count }) else {
-            print("Google RealityKit primitive skipped: index exceeds vertex count")
-            return nil
-        }
 
         do {
             var descriptor = MeshDescriptor(name: "Google Photorealistic Tile")
             descriptor.positions = MeshBuffers.Positions(positions)
             descriptor.textureCoordinates = MeshBuffers.TextureCoordinates(textureCoordinates)
-            descriptor.primitives = .triangles(indices)
+            descriptor.primitives = .triangles(uint32s(from: payload.indices))
 
             let mesh = try MeshResource.generate(from: [descriptor])
-            var material = UnlitMaterial()
             let texture = try await Self.makeTexture(
                 rgba8: payload.rgbaImage,
                 width: payload.imageWidth,
                 height: payload.imageHeight
             )
-            let textureParameter = MaterialParameters.Texture(
-                texture,
-                sampler: makeSampler(from: payload)
+            var material = UnlitMaterial()
+            material.color = .init(
+                tint: .white,
+                texture: MaterialParameters.Texture(texture, sampler: makeSampler(from: payload))
             )
-            material.color = .init(tint: .white, texture: textureParameter)
-            // glTF's `doubleSided` controls whether back-face culling is disabled.
             material.faceCulling = payload.doubleSided ? .none : .back
             return AnchoredEntity(
                 entity: ModelEntity(mesh: mesh, materials: [material]),
                 ecefFromPrimitiveLocal: payload.ecefFromPrimitiveLocal
             )
         } catch {
-            print("Google RealityKit primitive skipped: \(error)")
+            print("Google tile primitive skipped: \(error)")
             return nil
         }
     }
 
-    private func applyCurrentPlacement(to anchoredEntity: AnchoredEntity) {
-        // primitive-local -> ECEF -> current render-local, all in Double metres.
-        // This is the only matrix cast used to place the retained RealityKit entity.
-        let renderLocalFromPrimitiveLocal =
-            renderLocalFromEcef * anchoredEntity.ecefFromPrimitiveLocal
-        anchoredEntity.entity.transform = Transform(
-            matrix: FlightState.realityKitMatrix(renderLocalFromPrimitiveLocal)
-        )
-    }
-
-    // Cesium supplies decoded, tightly-packed RGBA8 pixels. Keep this constructor
-    // internal so the regression test exercises the same CGImage-backed upload
-    // used by streaming tiles rather than a test-only approximation.
+    /// Cesium's decoded RGBA8 texels, top row first, as a RealityKit texture.
+    /// Internal so the regression test exercises the same upload as streaming.
     static func makeTexture(
         rgba8: Data,
         width: Int,
@@ -228,16 +167,13 @@ final class GoogleTileRenderer {
             throw GoogleTileRendererError.invalidImage
         }
 
-        // Keep Cesium's decoded RGBA row order unchanged. The raw-contents
-        // TextureResource initializer produced one white frame on first visible
-        // use on the M2 Vision Pro, even after a completed GPU copy proved its
-        // pixels readable. The CGImage initializer presents correctly from its
-        // first frame and also produced more natural colour on the same route.
+        // Through a CGImage, not the raw-contents initialiser: the raw path
+        // showed one white frame before every new texture on the M2 Vision Pro,
+        // even after a completed GPU copy proved its pixels readable.
         //
-        // glTF defines base-colour texels as sRGB, so that is what these bytes
-        // are. Labelling them Display P3 told RealityKit to skip the gamut
-        // conversion it would otherwise apply, which stretched every saturated
-        // colour outwards towards the wider P3 primaries.
+        // glTF base-colour texels are sRGB, and saying so is what makes
+        // RealityKit convert them to Display P3. Labelling them Display P3
+        // skips that conversion and oversaturates every strong colour.
         guard let provider = CGDataProvider(data: rgba8 as CFData),
               let colourSpace = CGColorSpace(name: CGColorSpace.sRGB),
               let image = CGImage(
@@ -264,6 +200,8 @@ final class GoogleTileRenderer {
         )
     }
 
+    /// The glTF sampler, set explicitly rather than trusting RealityKit's
+    /// defaults. The numbers are glTF's, which are OpenGL's.
     private func makeSampler(
         from payload: CesiumPrimitivePayload
     ) -> MaterialParameters.Texture.Sampler {
@@ -288,7 +226,7 @@ final class GoogleTileRenderer {
             case 9986: // NEAREST_MIPMAP_LINEAR
                 descriptor.minFilter = .nearest
                 descriptor.mipFilter = .linear
-            default: // LINEAR_MIPMAP_LINEAR, including the glTF default
+            default: // LINEAR_MIPMAP_LINEAR, glTF's default
                 descriptor.minFilter = .linear
                 descriptor.mipFilter = .linear
             }
@@ -299,11 +237,11 @@ final class GoogleTileRenderer {
 
     private func addressMode(for gltfWrapMode: Int) -> MTLSamplerAddressMode {
         switch gltfWrapMode {
-        case 33071:
+        case 33071: // CLAMP_TO_EDGE
             return .clampToEdge
-        case 33648:
+        case 33648: // MIRRORED_REPEAT
             return .mirrorRepeat
-        default:
+        default: // REPEAT
             return .repeat
         }
     }

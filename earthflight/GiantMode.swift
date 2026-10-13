@@ -1,6 +1,6 @@
 import Foundation
 
-/// How large the wearer is, counted in doublings above the accepted baseline.
+/// How large the wearer is, counted in doublings above life size.
 ///
 /// The Vision Pro's eyes are a fixed 63 mm apart, so binocular depth only reads
 /// on things within a few tens of metres. From a craft over a city that is
@@ -23,11 +23,11 @@ import Foundation
 /// in doublings is a constant *perceived* rate, and it keeps every settled
 /// level an exact power of two with the baseline at exactly 1.
 ///
-/// There is no reset: hold D-pad down until it stops.
+/// There is no reset: press D-pad down until the size stops changing.
 @MainActor
 final class GiantMode {
-    /// Where the D-pad has asked to be. Zero is the accepted one-to-one world
-    /// and the floor; the ceiling is `EarthflightTuning.maximumGiantDoublings`.
+    /// Where the D-pad has asked to be. Zero is the one-to-one world and the
+    /// floor; the ceiling is `EarthflightTuning.maximumGiantDoublings`.
     private var targetDoublings = 0
 
     /// Where the render currently is, chasing the target.

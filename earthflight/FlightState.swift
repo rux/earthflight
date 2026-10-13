@@ -1,32 +1,39 @@
 import Foundation
 import simd
 
-/// Both directions of one WGS84 tangent frame. Build this only where both are
-/// wanted, which is the floating render origin: launch, jump and rebase. Code
-/// that needs the forward transform alone should call
-/// `CesiumBridge.ecefFromLocalHorizontal` directly rather than build a frame and
-/// drop `localFromEcef`. Measured on the M2 headset, that costs nothing in
-/// Release -- whole-module optimisation already deletes the dead general 4x4
-/// Double inverse -- so this is about not writing work nobody wants, and about
-/// Debug builds, where nothing deletes it.
+/// One frame of controller input, already in flight terms, with dead zones
+/// applied.
+struct FlightInput {
+    /// x strafes right; y moves forward.
+    var leftStick = SIMD2<Float>.zero
+    /// x yaws right; y is the stick pushed forward, which pitches the nose down.
+    var rightStick = SIMD2<Float>.zero
+    /// +1 climbs and -1 descends, along local up.
+    var vertical: Float = 0
+    /// +1 rolls right and -1 rolls left.
+    var roll: Float = 0
+    var isBoosting = false
+    var isVerticalBoosting = false
+}
+
+/// Both directions of one WGS84 tangent frame, for the floating render origin,
+/// which needs both. Code that needs only local -> ECEF should call
+/// `CesiumBridge.ecefFromLocalHorizontal` and skip the inverse.
 struct EarthflightLocalFrame {
     let ecefFromLocal: simd_double4x4
     let localFromEcef: simd_double4x4
 
     init(originEcef: SIMD3<Double>) {
-        ecefFromLocal = CesiumBridge.ecefFromLocalHorizontal(
-            atEcefPosition: originEcef
-        )
+        ecefFromLocal = CesiumBridge.ecefFromLocalHorizontal(atEcefPosition: originEcef)
         localFromEcef = ecefFromLocal.inverse
     }
 }
 
-/// Linear release decay for one two-axis stick: the live input while the stick is
-/// deflected, then a ramp from the strongest deliberate sample down to zero. Both
-/// sticks want exactly this, including the recentre-rebound guard below, so they
-/// share one implementation rather than keeping a copy each.
-private struct StickReleaseDecay {
-    private var strongestActiveInput = SIMD2<Float>(repeating: 0)
+/// A linear fade after a two-axis control is released: the live input while it
+/// is held, then a ramp from the strongest deliberate sample down to zero. Any
+/// new input cancels a fade in progress. A duration of zero disables it.
+private struct ReleaseDecay {
+    private var strongestActiveInput = SIMD2<Float>.zero
     private var wasActive = false
     private var remainingSeconds: Float = 0
 
@@ -35,16 +42,16 @@ private struct StickReleaseDecay {
         durationSeconds: Float,
         deltaTime: Float
     ) -> SIMD2<Float> {
+        guard durationSeconds > 0 else {
+            return input
+        }
         if input != .zero {
-            // Any new input cancels an in-flight release before becoming the
-            // source gesture for the next distinct active-to-zero transition.
             if !wasActive {
                 strongestActiveInput = input
             } else {
-                // Physical testing showed Switch Pro recentering rebound as high
-                // as +0.62 after a -1.0 left strafe, far beyond the dead zone.
-                // Preserve the strongest deliberate sample on each axis rather
-                // than arming a wrong-direction decay from that spring rebound.
+                // A released Switch Pro stick rebounds past centre, as far as
+                // +0.62 after a -1.0 strafe. Keeping the strongest sample on each
+                // axis stops that rebound arming a fade in the wrong direction.
                 if abs(input.x) >= abs(strongestActiveInput.x) {
                     strongestActiveInput.x = input.x
                 }
@@ -63,40 +70,27 @@ private struct StickReleaseDecay {
         guard remainingSeconds > 0 else {
             return .zero
         }
-
         remainingSeconds = max(0, remainingSeconds - deltaTime)
         return strongestActiveInput * (remainingSeconds / durationSeconds)
     }
-
-    mutating func clear() {
-        strongestActiveInput = .zero
-        wasActive = false
-        remainingSeconds = 0
-    }
 }
 
+/// The craft: where it is, which way it points, and the render frame around it.
 @MainActor
 final class FlightState {
     static let launchLongitudeDegrees = -0.1278
     static let launchLatitudeDegrees = 51.5074
-    static let launchBaseEllipsoidHeightMeters = 120.0
     static let launchCraftEllipsoidHeightMeters = 121.5
+    static let launchRenderOriginEllipsoidHeightMeters = 120.0
 
-    // A tangent step keeps the simple projected horizontal integration well
-    // conditioned. What has to stay small is the angle the step subtends at the
-    // Earth's centre, not its length, so the limit scales with the craft's
-    // geocentric radius: 10 km at the surface, and the same 1.6 milliradians from
-    // any altitude. A flat 10 km made the step count grow with altitude without
-    // bound, and horizontal speed grows with altitude too, so the two multiplied.
-    // Nose down on full reverse stick turns that horizontal speed into climb and
-    // the height feeds its own growth; ten seconds of it reached 899,106 Cesium
-    // conversions in a single frame, which buried the frame rate and took the
-    // controls, the tile updates and the sky's own update with it.
+    // A horizontal step must stay small as an angle at the Earth's centre, not
+    // as a length, so the limit scales with geocentric radius: 10 km at the
+    // surface, 1.6 milliradians anywhere. A flat 10 km limit let the step count
+    // grow with altitude while speed grew with altitude too, and a pitched
+    // climb once needed 899,106 Cesium conversions in a single frame.
     nonisolated private static let maximumSpatialIntegrationAngleRadians = 10_000.0 / 6_371_000.0
 
-    /// Steps the horizontal integration takes for one frame's tangent movement.
-    /// Scaling with radius is what holds this flat instead of letting it grow
-    /// with altitude; the invariant is worth a test of its own.
+    /// Steps the horizontal integration takes for one frame's movement.
     nonisolated static func integrationStepCount(
         horizontalDistanceMeters: Double,
         geocentricRadiusMeters: Double
@@ -105,88 +99,76 @@ final class FlightState {
         return max(1, Int(ceil(horizontalDistanceMeters / stepLimit)))
     }
 
-    // The single persistent global position: WGS84 Earth-centred, Earth-fixed
-    // Cartesian metres in Double. Cartographic values below are derived snapshots.
+    /// The one authoritative position: WGS84 Earth-centred, Earth-fixed metres.
+    /// The cartographic values below are derived from it.
     private(set) var craftEcefPosition: SIMD3<Double>
     private(set) var longitudeDegrees: Double
     private(set) var latitudeDegrees: Double
     private(set) var ellipsoidHeightMeters: Double
 
-    // Current floating render frame. Local axes are right-handed X=east,
-    // Y=geodetic up, Z=south; translations are metres. Both matrices stay Double.
+    /// The floating render frame: right-handed, X east, Y geodetic up, Z south,
+    /// metres, with its origin wherever launch, a jump or a rebase last put it.
     private(set) var ecefFromRenderLocal: simd_double4x4
     private(set) var renderLocalFromEcef: simd_double4x4
 
-    /// Approximate local ground ellipsoid height used only by the accepted speed
-    /// curve. It is not continuously sampled while flying away from this datum.
+    /// Ground level for the speed curve. Set at launch and by each jump, and
+    /// not followed while flying away from there.
     private var speedReferenceGroundEllipsoidHeightMeters: Double
 
+    /// Craft-local -> local-horizontal attitude, rebuilt from the three angles.
     private(set) var orientation = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
 
-    // Keep these as independent control state. Rebuilding the basis makes the
-    // accepted invariant explicit: heading and pitch never create incidental roll.
-    private var headingRadians: Float = 0
-    private var pitchRadians: Float = 0
-    private var rollRadians: Float = 0
+    // Held as separate angles, and the basis rebuilt from them, so that heading
+    // and pitch can never create roll. Double, because carrying the heading
+    // along each move adds changes too small for a Float.
+    private var headingRadians = 0.0
+    private var pitchRadians = 0.0
+    private var rollRadians = 0.0
 
-    var leftStick = SIMD2<Float>(repeating: 0)
-    var rightStick = SIMD2<Float>(repeating: 0)
-    var isAscending = false
-    var isDescending = false
-    var isRollingLeft = false
-    var isRollingRight = false
-    var isBoosting = false
-    var isVerticalBoosting = false
+    private var movementRelease = ReleaseDecay()
+    private var verticalRelease = ReleaseDecay()
+    private var steeringRelease = ReleaseDecay()
 
-    private var leftStickRelease = StickReleaseDecay()
-    private var rightStickRelease = StickReleaseDecay()
-    private var lastActiveVerticalInput: Float = 0
-    private var wasVerticalInputActive = false
-    private var verticalReleaseRemainingSeconds: Float = 0
-
-    init() {
-        let craftEcef = Self.ecefPosition(
+    /// The launch pose over London. The render origin starts 1.5 m below the
+    /// craft: with `earthRoot` at identity on the first frame, that puts the
+    /// craft, the wearer's eye point, at standing head height above the
+    /// immersive space's floor origin.
+    convenience init() {
+        self.init(
             longitudeDegrees: Self.launchLongitudeDegrees,
             latitudeDegrees: Self.launchLatitudeDegrees,
-            ellipsoidHeightMeters: Self.launchCraftEllipsoidHeightMeters
+            ellipsoidHeightMeters: Self.launchCraftEllipsoidHeightMeters,
+            renderOriginEllipsoidHeightMeters: Self.launchRenderOriginEllipsoidHeightMeters
         )
-        let renderOriginEcef = Self.ecefPosition(
-            longitudeDegrees: Self.launchLongitudeDegrees,
-            latitudeDegrees: Self.launchLatitudeDegrees,
-            ellipsoidHeightMeters: Self.launchBaseEllipsoidHeightMeters
-        )
-        let renderFrame = EarthflightLocalFrame(originEcef: renderOriginEcef)
-        craftEcefPosition = craftEcef
-        longitudeDegrees = Self.launchLongitudeDegrees
-        latitudeDegrees = Self.launchLatitudeDegrees
-        ellipsoidHeightMeters = Self.launchCraftEllipsoidHeightMeters
-        ecefFromRenderLocal = renderFrame.ecefFromLocal
-        renderLocalFromEcef = renderFrame.localFromEcef
-        speedReferenceGroundEllipsoidHeightMeters =
-            Self.launchCraftEllipsoidHeightMeters - EarthflightTuning.initialSpeedReferenceHeightMeters
-        updateCartographic()
     }
 
+    /// A level craft facing north. The render origin is at the craft unless a
+    /// separate height is given.
     init(
         longitudeDegrees: Double,
         latitudeDegrees: Double,
-        ellipsoidHeightMeters: Double
+        ellipsoidHeightMeters: Double,
+        renderOriginEllipsoidHeightMeters: Double? = nil
     ) {
-        let craftEcef = Self.ecefPosition(
+        craftEcefPosition = Self.ecefPosition(
             longitudeDegrees: longitudeDegrees,
             latitudeDegrees: latitudeDegrees,
             ellipsoidHeightMeters: ellipsoidHeightMeters
         )
-        let renderFrame = EarthflightLocalFrame(originEcef: craftEcef)
-        craftEcefPosition = craftEcef
-        self.longitudeDegrees = longitudeDegrees
-        self.latitudeDegrees = latitudeDegrees
-        self.ellipsoidHeightMeters = ellipsoidHeightMeters
+        let renderOriginEcef = Self.ecefPosition(
+            longitudeDegrees: longitudeDegrees,
+            latitudeDegrees: latitudeDegrees,
+            ellipsoidHeightMeters: renderOriginEllipsoidHeightMeters ?? ellipsoidHeightMeters
+        )
+        let renderFrame = EarthflightLocalFrame(originEcef: renderOriginEcef)
         ecefFromRenderLocal = renderFrame.ecefFromLocal
         renderLocalFromEcef = renderFrame.localFromEcef
+        let cartographic = Self.cartographicDegrees(of: craftEcefPosition)
+        self.longitudeDegrees = cartographic.x
+        self.latitudeDegrees = cartographic.y
+        self.ellipsoidHeightMeters = cartographic.z
         speedReferenceGroundEllipsoidHeightMeters =
-            ellipsoidHeightMeters - EarthflightTuning.initialSpeedReferenceHeightMeters
-        updateCartographic()
+            cartographic.z - EarthflightTuning.initialSpeedReferenceHeightMeters
     }
 
     static func ecefPosition(
@@ -201,170 +183,128 @@ final class FlightState {
         )
     }
 
-    var speedReferenceHeightMeters: Double {
-        max(
-            0,
-            ellipsoidHeightMeters - speedReferenceGroundEllipsoidHeightMeters
+    /// Longitude, latitude and ellipsoid height.
+    private static func cartographicDegrees(of ecefPosition: SIMD3<Double>) -> SIMD3<Double> {
+        let cartographic = CesiumBridge.cartographicDegrees(fromEcefPosition: ecefPosition)
+        precondition(
+            cartographic.x.isFinite && cartographic.y.isFinite && cartographic.z.isFinite,
+            "Cesium could not convert craft ECEF to WGS84 cartographic coordinates"
         )
+        return cartographic
+    }
+
+    var speedReferenceHeightMeters: Double {
+        max(0, ellipsoidHeightMeters - speedReferenceGroundEllipsoidHeightMeters)
     }
 
     var originDistanceMeters: Double {
-        let origin = SIMD3<Double>(
-            ecefFromRenderLocal.columns.3.x,
-            ecefFromRenderLocal.columns.3.y,
-            ecefFromRenderLocal.columns.3.z
-        )
-        return simd_length(craftEcefPosition - origin)
+        simd_length(craftEcefPosition - simd_make_double3(ecefFromRenderLocal.columns.3))
     }
 
     var renderLocalPosition: SIMD3<Double> {
-        let position = renderLocalFromEcef * SIMD4<Double>(craftEcefPosition, 1)
-        return SIMD3(position.x, position.y, position.z)
+        simd_make_double3(renderLocalFromEcef * SIMD4<Double>(craftEcefPosition, 1))
     }
 
     var position: SIMD3<Float> {
-        let local = renderLocalPosition
-        return SIMD3(Float(local.x), Float(local.y), Float(local.z))
-    }
-
-    var ecefFromCraftLocalHorizontal: simd_double4x4 {
-        // Nothing here wants the ECEF -> craft-tangent direction, so ask for the
-        // one transform rather than build a frame and drop its inverse.
-        CesiumBridge.ecefFromLocalHorizontal(atEcefPosition: craftEcefPosition)
+        SIMD3<Float>(renderLocalPosition)
     }
 
     var renderLocalFromCraft: simd_double4x4 {
-        // craft-local -> current WGS84 tangent frame applies the accepted attitude;
-        // tangent-local -> ECEF then ECEF -> render-local applies Earth curvature once.
-        renderLocalFromEcef * ecefFromCraftLocalHorizontal * localHorizontalFromCraft
+        // Craft-local -> current tangent frame applies the attitude; tangent ->
+        // ECEF -> render-local then applies the Earth's curvature, once.
+        renderLocalFromCraftTangent * localHorizontalFromCraft
     }
 
-    /// Render-local orientation of the craft's current geodetic tangent frame,
-    /// with no attitude term. The render-local frame's own axes are fixed at
-    /// whatever point last set the render origin (launch, jump or rebase), so
-    /// they only match current geodetic up there; up to the 50 km rebase
-    /// distance away they can differ by about 0.45 degrees. Anything that wants
-    /// current geodetic up rather than origin-geodetic up, such as the sky
-    /// dome's zenith axis, needs this rotation and not `renderLocalFromEcef` alone.
+    /// Render-local orientation of the craft's current tangent frame, with no
+    /// attitude. The render frame's own axes match geodetic up only where the
+    /// render origin was last set; 50 km away they are about 0.45 degrees out.
+    /// Anything that wants up *here*, such as the sky's zenith, needs this.
     var renderLocalFromCraftTangent: simd_double4x4 {
-        renderLocalFromEcef * ecefFromCraftLocalHorizontal
+        renderLocalFromEcef * CesiumBridge.ecefFromLocalHorizontal(atEcefPosition: craftEcefPosition)
     }
 
-    /// Puts every controller input at rest without touching position or attitude.
-    /// A controller that has gone away can no longer report a release, so its last
-    /// values, and the release tails they would arm, must be dropped outright.
-    func neutraliseInput() {
-        leftStick = .zero
-        rightStick = .zero
-        isAscending = false
-        isDescending = false
-        isRollingLeft = false
-        isRollingRight = false
-        isBoosting = false
-        isVerticalBoosting = false
-        clearMovementRelease()
-        rightStickRelease.clear()
-    }
-
-    // Physical right-stick click restores launch attitude while preserving the
-    // sole global position and all movement input state.
+    /// A right-stick click: back to the launch attitude, wherever the craft is.
     func resetView() {
         headingRadians = 0
         pitchRadians = 0
         rollRadians = 0
-        // A residual steering tail would immediately turn the craft back off the
-        // level attitude the reset just restored, so drop it here. Movement input
-        // and its own release tail are deliberately preserved.
-        rightStickRelease.clear()
+        // A steering fade still running would turn the craft straight back off
+        // level. Movement and its fade are left alone.
+        steeringRelease = ReleaseDecay()
         rebuildOrientation()
     }
 
-    /// Atomically replaces the global craft position and floating render frame.
-    /// Controller input remains intact, while heading, pitch, and roll reset through
-    /// the same path as a physical right-stick click so every destination starts level.
+    /// Moves the craft and its render frame to a new place in one step, level
+    /// and facing north.
     func jump(
         longitudeDegrees: Double,
         latitudeDegrees: Double,
         groundEllipsoidHeightMeters: Double,
         heightAboveGroundMeters: Double
     ) {
-        let destinationEllipsoidHeightMeters =
-            groundEllipsoidHeightMeters + heightAboveGroundMeters
         craftEcefPosition = Self.ecefPosition(
             longitudeDegrees: longitudeDegrees,
             latitudeDegrees: latitudeDegrees,
-            ellipsoidHeightMeters: destinationEllipsoidHeightMeters
+            ellipsoidHeightMeters: groundEllipsoidHeightMeters + heightAboveGroundMeters
         )
         updateCartographic()
         let frame = EarthflightLocalFrame(originEcef: craftEcefPosition)
         ecefFromRenderLocal = frame.ecefFromLocal
         renderLocalFromEcef = frame.localFromEcef
         speedReferenceGroundEllipsoidHeightMeters = groundEllipsoidHeightMeters
-        clearMovementRelease()
+        movementRelease = ReleaseDecay()
+        verticalRelease = ReleaseDecay()
         resetView()
     }
 
-    func advance(deltaTime: TimeInterval) {
+    /// Moves and turns the craft by one frame of input. `input` is nil when no
+    /// controller is connected: one that has gone away can no longer report a
+    /// release, so nothing it last reported may keep fading out.
+    func advance(input: FlightInput?, deltaTime: TimeInterval) {
+        guard let input else {
+            movementRelease = ReleaseDecay()
+            verticalRelease = ReleaseDecay()
+            steeringRelease = ReleaseDecay()
+            return
+        }
         let dt = Float(min(deltaTime, 0.1))
-        let rawVerticalInput = Float((isAscending ? 1 : 0) - (isDescending ? 1 : 0))
-        let movementLeftStick: SIMD2<Float>
-        let verticalInput: Float
-        if EarthflightTuning.movementReleaseDurationSeconds > 0 {
-            movementLeftStick = leftStickRelease.adjusted(
-                input: leftStick,
-                durationSeconds: EarthflightTuning.movementReleaseDurationSeconds,
-                deltaTime: dt
-            )
-            verticalInput = releaseAdjustedVerticalInput(
-                rawInput: rawVerticalInput,
-                deltaTime: dt
-            )
-        } else {
-            movementLeftStick = leftStick
-            verticalInput = rawVerticalInput
-        }
+        let movementStick = movementRelease.adjusted(
+            input: input.leftStick,
+            durationSeconds: EarthflightTuning.movementReleaseDurationSeconds,
+            deltaTime: dt
+        )
+        // One axis; the second is always zero.
+        let vertical = verticalRelease.adjusted(
+            input: SIMD2(input.vertical, 0),
+            durationSeconds: EarthflightTuning.movementReleaseDurationSeconds,
+            deltaTime: dt
+        ).x
+        // What fades on the right stick is the turn rate, so the craft eases
+        // out of a turn.
+        let steeringStick = steeringRelease.adjusted(
+            input: input.rightStick,
+            durationSeconds: EarthflightTuning.steeringReleaseDurationSeconds,
+            deltaTime: dt
+        )
 
-        // The right stick decays the same way, but it steers rather than moves:
-        // what coasts is the turn rate, so the craft eases out of a yaw or pitch
-        // instead of stopping dead. Keep this duration well under the movement
-        // one; a long tail reads as the craft overshooting where it was aimed.
-        // Roll is on buttons and is deliberately left alone.
-        let steeringStick: SIMD2<Float>
-        if EarthflightTuning.steeringReleaseDurationSeconds > 0 {
-            steeringStick = rightStickRelease.adjusted(
-                input: rightStick,
-                durationSeconds: EarthflightTuning.steeringReleaseDurationSeconds,
-                deltaTime: dt
-            )
-        } else {
-            steeringStick = rightStick
-        }
-
-        headingRadians -= steeringStick.x * EarthflightTuning.yawRateRadiansPerSecond * dt
-        // The verified Switch Pro Controller reports forward stick motion as
-        // positive Y. Decreasing pitch pitches the craft nose down.
-        pitchRadians -= steeringStick.y * EarthflightTuning.pitchRateRadiansPerSecond * dt
-        let rollInput: Float = (isRollingRight ? 1 : 0) - (isRollingLeft ? 1 : 0)
-        rollRadians -= rollInput * EarthflightTuning.rollRateRadiansPerSecond * dt
-
-        headingRadians = atan2(sin(headingRadians), cos(headingRadians))
-        rollRadians = atan2(sin(rollRadians), cos(rollRadians))
-        let maximumPitch = EarthflightTuning.maximumPitchFromHorizonDegrees * .pi / 180
+        headingRadians -= Double(steeringStick.x * EarthflightTuning.yawRateRadiansPerSecond * dt)
+        // Positive stick y is pushed forward, which pitches the nose down.
+        pitchRadians -= Double(steeringStick.y * EarthflightTuning.pitchRateRadiansPerSecond * dt)
+        rollRadians -= Double(input.roll * EarthflightTuning.rollRateRadiansPerSecond * dt)
+        headingRadians = Self.wrapped(headingRadians)
+        rollRadians = Self.wrapped(rollRadians)
+        let maximumPitch = Double(EarthflightTuning.maximumPitchFromHorizonDegrees) * .pi / 180
         pitchRadians = min(max(pitchRadians, -maximumPitch), maximumPitch)
         rebuildOrientation()
 
         let horizontalSpeed = (
             EarthflightTuning.minimumHorizontalSpeedMetersPerSecond +
                 EarthflightTuning.horizontalHeightSpeedFactor * speedReferenceHeightMeters
-        ) * Double(EarthflightTuning.horizontalSpeedMultiplier) *
-            (isBoosting ? EarthflightTuning.boostMultiplier : 1)
-        let craftMovement = orientation.act(
-            SIMD3<Float>(movementLeftStick.x, 0, -movementLeftStick.y)
-        )
+        ) * EarthflightTuning.horizontalSpeedMultiplier *
+            (input.isBoosting ? EarthflightTuning.boostMultiplier : 1)
+        // The stick moves the craft along its own axes, pitch included.
         let attitudeMovement = SIMD3<Double>(
-            Double(craftMovement.x),
-            Double(craftMovement.y),
-            Double(craftMovement.z)
+            orientation.act(SIMD3<Float>(movementStick.x, 0, -movementStick.y))
         ) * horizontalSpeed * Double(dt)
 
         let lowAltitudeVerticalSpeed = min(
@@ -383,70 +323,37 @@ final class FlightState {
                 EarthflightTuning.highAltitudeExcessSquaredSpeedFactor *
                 highAltitudeExcess * highAltitudeExcess
         )
-        let verticalBoost = isBoosting || isVerticalBoosting
+        let verticalBoost = input.isBoosting || input.isVerticalBoosting
             ? EarthflightTuning.boostMultiplier
             : 1
-        let geodeticVerticalMovement = SIMD3<Double>(
+        // The vertical buttons move along local up, whatever the attitude.
+        let verticalMovement = SIMD3<Double>(
             0,
-            Double(verticalInput) * verticalSpeed * verticalBoost * Double(dt),
+            Double(vertical) * verticalSpeed * verticalBoost * Double(dt),
             0
         )
 
-        integrate(localDisplacement: attitudeMovement + geodeticVerticalMovement)
+        integrate(localDisplacement: attitudeMovement + verticalMovement)
     }
 
-    private func releaseAdjustedVerticalInput(
-        rawInput: Float,
-        deltaTime: Float
-    ) -> Float {
-        let duration = EarthflightTuning.movementReleaseDurationSeconds
-        if rawInput != 0 {
-            lastActiveVerticalInput = rawInput
-            wasVerticalInputActive = true
-            verticalReleaseRemainingSeconds = 0
-            return rawInput
-        }
-        if wasVerticalInputActive {
-            wasVerticalInputActive = false
-            verticalReleaseRemainingSeconds = duration
-        }
-        guard verticalReleaseRemainingSeconds > 0 else {
-            return 0
-        }
-
-        verticalReleaseRemainingSeconds = max(0, verticalReleaseRemainingSeconds - deltaTime)
-        return lastActiveVerticalInput * (verticalReleaseRemainingSeconds / duration)
-    }
-
-    /// Movement only: the left stick and the vertical buttons. A right-stick
-    /// click resets attitude and clears the steering tail separately, because it
-    /// must not also cancel travel the owner is still asking for.
-    private func clearMovementRelease() {
-        leftStickRelease.clear()
-        lastActiveVerticalInput = 0
-        wasVerticalInputActive = false
-        verticalReleaseRemainingSeconds = 0
-    }
-
-    @discardableResult
+    /// Moves the render origin to the craft once it has drifted far enough for
+    /// Float precision to matter. True if it moved.
     func rebaseIfNeeded() -> Bool {
         guard originDistanceMeters >= EarthflightTuning.renderOriginRebaseDistanceMeters else {
             return false
         }
-        let newFrame = EarthflightLocalFrame(originEcef: craftEcefPosition)
-        ecefFromRenderLocal = newFrame.ecefFromLocal
-        renderLocalFromEcef = newFrame.localFromEcef
+        let frame = EarthflightLocalFrame(originEcef: craftEcefPosition)
+        ecefFromRenderLocal = frame.ecefFromLocal
+        renderLocalFromEcef = frame.localFromEcef
         return true
     }
 
+    /// Applies one frame's displacement, given in the craft's current tangent
+    /// frame, and carries the heading along with it.
     private func integrate(localDisplacement: SIMD3<Double>) {
-        // No displacement means no new position. The step below would otherwise
-        // rebuild the tangent frame and round-trip the craft through Cesium's
-        // cartographic conversion for nothing: on the M2 headset a hands-off
-        // `advance` measured 397 ns before this guard and 68 ns after, every
-        // frame the sticks are centred. The round trip is very nearly exact -- one
-        // nanometre over a minute of idling -- but "very nearly" is a poor
-        // contract for standing still, and this makes it exact by construction.
+        // No displacement, no new position, exactly. Without this a hovering
+        // craft would round-trip through Cesium's cartographic conversion every
+        // frame and creep.
         guard localDisplacement != .zero else { return }
 
         let horizontalDistance = simd_length(
@@ -456,75 +363,89 @@ final class FlightState {
             horizontalDistanceMeters: horizontalDistance,
             geocentricRadiusMeters: simd_length(craftEcefPosition)
         )
-        let step = localDisplacement / Double(stepCount)
+        let horizontalStepLength = horizontalDistance / Double(stepCount)
+        let verticalStep = localDisplacement.y / Double(stepCount)
+
+        // The horizontal step and the craft's level forward direction travel as
+        // ECEF vectors, and are laid back onto each new tangent plane after every
+        // step. That is parallel transport: held straight, the craft flies a
+        // great circle and keeps its heading relative to it. Holding a compass
+        // heading instead flies a line of constant bearing, which spirals into a
+        // pole, and flying due north bounces back and forth across the pole with
+        // the world turning 180 degrees every frame.
+        var ecefFromLocal = CesiumBridge.ecefFromLocalHorizontal(atEcefPosition: craftEcefPosition)
+        var horizontalStepEcef = simd_make_double3(
+            ecefFromLocal * SIMD4(localDisplacement.x, 0, localDisplacement.z, 0)
+        ) / Double(stepCount)
+        var forwardEcef = simd_make_double3(
+            ecefFromLocal * SIMD4(-sin(headingRadians), 0, -cos(headingRadians), 0)
+        )
 
         for _ in 0..<stepCount {
-            let ecefFromCurrentLocal = CesiumBridge.ecefFromLocalHorizontal(
-                atEcefPosition: craftEcefPosition
-            )
-            let horizontalCandidateEcef4 = ecefFromCurrentLocal *
-                SIMD4<Double>(step.x, 0, step.z, 1)
-            let horizontalCandidateEcef = SIMD3<Double>(
-                horizontalCandidateEcef4.x,
-                horizontalCandidateEcef4.y,
-                horizontalCandidateEcef4.z
-            )
-            let candidateCartographic = CesiumBridge.cartographicDegrees(
-                fromEcefPosition: horizontalCandidateEcef
-            )
-            precondition(
-                candidateCartographic.x.isFinite &&
-                    candidateCartographic.y.isFinite &&
-                    candidateCartographic.z.isFinite,
-                "Cesium could not convert the integrated ECEF craft position"
-            )
-            // Horizontal tangent motion selects the next lon/lat, then the ECEF
-            // position is reconstructed at only the explicitly intended height.
-            // This removes tangent-chord altitude gain while retaining pitch-induced
-            // local-up motion and independent ZL/ZR geodetic vertical motion.
-            // The ceiling is the one place flight height is bounded; see the
-            // tuning constant for why the world stops being drawable above it.
+            // Horizontal motion along the tangent plane picks the next longitude
+            // and latitude only. Height is then set explicitly, so stepping along
+            // a tangent cannot add altitude. This is the one place flight height
+            // is bounded.
+            let candidate = Self.cartographicDegrees(of: craftEcefPosition + horizontalStepEcef)
             craftEcefPosition = Self.ecefPosition(
-                longitudeDegrees: candidateCartographic.x,
-                latitudeDegrees: candidateCartographic.y,
+                longitudeDegrees: candidate.x,
+                latitudeDegrees: candidate.y,
                 ellipsoidHeightMeters: min(
-                    ellipsoidHeightMeters + step.y,
+                    ellipsoidHeightMeters + verticalStep,
                     EarthflightTuning.maximumEllipsoidHeightMeters
                 )
             )
             updateCartographic()
+            ecefFromLocal = CesiumBridge.ecefFromLocalHorizontal(atEcefPosition: craftEcefPosition)
+            let up = simd_make_double3(ecefFromLocal.columns.1)
+            horizontalStepEcef = Self.horizontal(horizontalStepEcef, up: up) * horizontalStepLength
+            forwardEcef = Self.horizontal(forwardEcef, up: up)
         }
+
+        guard horizontalDistance > 0 else { return }
+        // Level forward is (-sin h, 0, -cos h) in the tangent frame, whose X is
+        // east and Z south.
+        let east = simd_make_double3(ecefFromLocal.columns.0)
+        let south = simd_make_double3(ecefFromLocal.columns.2)
+        headingRadians = atan2(-simd_dot(forwardEcef, east), -simd_dot(forwardEcef, south))
+        rebuildOrientation()
+    }
+
+    /// The unit direction of `vector` once laid flat in the plane normal to `up`.
+    /// Zero stays zero.
+    private static func horizontal(_ vector: SIMD3<Double>, up: SIMD3<Double>) -> SIMD3<Double> {
+        let flat = vector - simd_dot(vector, up) * up
+        let length = simd_length(flat)
+        return length > 0 ? flat / length : .zero
+    }
+
+    private static func wrapped(_ angleRadians: Double) -> Double {
+        atan2(sin(angleRadians), cos(angleRadians))
     }
 
     private func updateCartographic() {
-        let cartographic = CesiumBridge.cartographicDegrees(
-            fromEcefPosition: craftEcefPosition
-        )
-        precondition(
-            cartographic.x.isFinite && cartographic.y.isFinite && cartographic.z.isFinite,
-            "Cesium could not derive WGS84 cartographic coordinates from craft ECEF"
-        )
+        let cartographic = Self.cartographicDegrees(of: craftEcefPosition)
         longitudeDegrees = cartographic.x
         latitudeDegrees = cartographic.y
         ellipsoidHeightMeters = cartographic.z
     }
 
     private func rebuildOrientation() {
-        // Build craft-local -> current local-horizontal axes from independent
-        // heading, pitch, and roll. With roll == 0 the right axis has zero local-up
-        // component, including during simultaneous yaw and pitch input.
+        // Craft-local -> local-horizontal axes, from heading, then pitch, then
+        // roll. With roll at zero the right axis has no local-up component, even
+        // while yawing and pitching together.
         let headingCosine = cos(headingRadians)
         let headingSine = sin(headingRadians)
         let pitchCosine = cos(pitchRadians)
         let pitchSine = sin(pitchRadians)
 
-        let levelRight = SIMD3<Float>(headingCosine, 0, -headingSine)
-        let levelUp = SIMD3<Float>(
+        let levelRight = SIMD3<Double>(headingCosine, 0, -headingSine)
+        let levelUp = SIMD3<Double>(
             headingSine * pitchSine,
             pitchCosine,
             headingCosine * pitchSine
         )
-        let backward = SIMD3<Float>(
+        let backward = SIMD3<Double>(
             headingSine * pitchCosine,
             -pitchSine,
             headingCosine * pitchCosine
@@ -534,73 +455,31 @@ final class FlightState {
         let rollSine = sin(rollRadians)
         let right = levelRight * rollCosine + levelUp * rollSine
         let up = -levelRight * rollSine + levelUp * rollCosine
-        orientation = simd_quatf(simd_float3x3(columns: (right, up, backward)))
+        orientation = simd_quatf(simd_float3x3(columns: (
+            SIMD3<Float>(right),
+            SIMD3<Float>(up),
+            SIMD3<Float>(backward)
+        )))
     }
 
     private var localHorizontalFromCraft: simd_double4x4 {
-        let rotation = simd_float3x3(orientation)
-        var matrix = matrix_identity_double4x4
-        for column in 0..<3 {
-            for row in 0..<3 {
-                matrix[column][row] = Double(rotation[column][row])
-            }
-        }
-        return matrix
+        simd_double4x4(simd_float4x4(orientation))
     }
 
-    /// Render-local -> immersive world: the craft's fixed launch pose in the
-    /// world, followed by the inverse of where the craft currently sits in the
-    /// render frame. Assigning this to `earthRoot` is how the Earth moves under
-    /// a camera that never does.
+    /// Render-local -> immersive world. The craft's fixed launch pose, then the
+    /// inverse of where the craft now sits in the render frame. Assigning this to
+    /// `earthRoot` moves the Earth under a camera that never moves.
     ///
-    /// `worldScale` is giant mode, and it belongs between the two terms rather
-    /// than outside them. Applied there it acts in the craft's own frame, so it
-    /// scales the world about the craft origin: the craft's world position, the
-    /// head-up display placed on it at launch, and every direction seen from it
-    /// are all left exactly as they were. See `GiantMode`.
+    /// `worldScale` is giant mode. It belongs between the two terms, where it
+    /// acts in the craft's own frame and so scales the world about the craft:
+    /// the craft's world position, the head-up display placed on it, and every
+    /// direction seen from it stay exactly as they were. See `GiantMode`.
     static func worldFromRenderLocal(
         worldFromCraftAtLaunch: simd_double4x4,
         renderLocalFromCraft: simd_double4x4,
         worldScale: Double = 1
     ) -> simd_double4x4 {
-        let scale = simd_double4x4(
-            diagonal: SIMD4<Double>(worldScale, worldScale, worldScale, 1)
-        )
+        let scale = simd_double4x4(diagonal: SIMD4<Double>(worldScale, worldScale, worldScale, 1))
         return worldFromCraftAtLaunch * scale * renderLocalFromCraft.inverse
-    }
-
-    // Pure casts between the Double planetary maths and RealityKit's Float
-    // transforms. Nonisolated because the target defaults to MainActor isolation
-    // and nothing about a matrix cast belongs on the render actor.
-    nonisolated static func realityKitMatrix(_ matrix: simd_double4x4) -> simd_float4x4 {
-        var result = matrix_identity_float4x4
-        for column in 0..<4 {
-            for row in 0..<4 {
-                result[column][row] = Float(matrix[column][row])
-            }
-        }
-        return result
-    }
-
-    nonisolated static func doubleMatrix(_ matrix: simd_float4x4) -> simd_double4x4 {
-        var result = matrix_identity_double4x4
-        for column in 0..<4 {
-            for row in 0..<4 {
-                result[column][row] = Double(matrix[column][row])
-            }
-        }
-        return result
-    }
-
-    /// Rotation part of a rigid Double transform, as a Float quaternion. Shared
-    /// by the sky dome, which orients itself to current geodetic up, and the
-    /// star field, which cancels the render frame's rotation to stay ECEF-fixed.
-    nonisolated static func orientation(_ matrix: simd_double4x4) -> simd_quatf {
-        let float = realityKitMatrix(matrix)
-        return simd_quatf(simd_float3x3(
-            SIMD3(float.columns.0.x, float.columns.0.y, float.columns.0.z),
-            SIMD3(float.columns.1.x, float.columns.1.y, float.columns.1.z),
-            SIMD3(float.columns.2.x, float.columns.2.y, float.columns.2.z)
-        ))
     }
 }

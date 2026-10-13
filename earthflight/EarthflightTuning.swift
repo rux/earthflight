@@ -1,12 +1,14 @@
 import Foundation
 
-// Owner-editable feel and presentation values. These remain compile-time
-// constants deliberately; Earthflight has no settings UI. The target defaults to
-// MainActor isolation, so these constants say so explicitly: the sky gradient
-// reads them from a background task.
+// Every owner-editable feel and presentation value. These are compile-time
+// constants on purpose: there is no settings screen. Nonisolated because the
+// target defaults to MainActor isolation and the sky gradient reads them from
+// a background task.
 nonisolated enum EarthflightTuning {
     // MARK: - Controller
 
+    // Fraction of full stick travel ignored around centre. Past it, response
+    // rises from zero, so there is no jump in speed at the edge.
     static let controllerDeadZone: Float = 0.12
     static let yawRateRadiansPerSecond: Float = 1.2
     static let pitchRateRadiansPerSecond: Float = 1.0
@@ -14,37 +16,34 @@ nonisolated enum EarthflightTuning {
 
     // MARK: - Flight
 
-    // Prevent right-stick pitch from crossing vertical and inverting the craft.
-    // Shoulder buttons remain the only source of roll.
+    // Stops right-stick pitch reaching vertical and flipping the craft over.
     static let maximumPitchFromHorizonDegrees: Float = 80
 
-    // Preserves the accepted London launch feel. It is not terrain height or
-    // AGL; flight altitude is WGS84 ellipsoid height.
+    // Speed scales with height above a reference ground level, which is set
+    // this far below the craft at launch. It is not terrain height: altitude is
+    // WGS84 ellipsoid height throughout.
     static let initialSpeedReferenceHeightMeters: Double = 70
 
-    // Forward and strafe share this linear altitude curve. The final multiplier
-    // changes the whole horizontal curve without changing its altitude response.
+    // Forward and strafe speed: minimum + factor * height, all times the
+    // multiplier, which scales the whole curve without changing its shape.
     static let minimumHorizontalSpeedMetersPerSecond: Double = 3
     static let horizontalHeightSpeedFactor: Double = 0.3
-    static let horizontalSpeedMultiplier: Float = 6
+    static let horizontalSpeedMultiplier: Double = 6
     static let boostMultiplier: Double = 4
 
-    // Left-stick translation and ZL/ZR vertical movement decay linearly for this
-    // long after release. Set to zero to disable the effect entirely; FlightState
-    // then bypasses all release-decay state and calculations.
+    // How long left-stick and vertical movement take to fade out after
+    // release, linearly. Zero disables the fade.
     static let movementReleaseDurationSeconds: Float = 0.5
 
-    // The same linear decay on right-stick yaw and pitch, so steering eases out
-    // rather than stopping dead. It is deliberately much shorter than the
-    // movement tail: this one coasts the turn rate, and a long tail keeps
-    // rotating the whole view after the owner has stopped asking for it, which
-    // reads as overshoot rather than as weight. Button roll is not affected.
-    // Set to zero to disable the effect entirely, as above.
+    // The same fade on right-stick yaw and pitch, so a turn eases out instead
+    // of stopping dead. Keep it much shorter than the movement fade: a long one
+    // keeps the view turning after the stick is released, which reads as
+    // overshoot rather than weight. Roll is not affected. Zero disables it.
     static let steeringReleaseDurationSeconds: Float = 0.15
 
-    // Ascend/descend uses two stages. The existing low-altitude squared curve is
-    // capped to preserve controllable city flight. Above the threshold, a second
-    // squared term ramps rapidly, making kilometre-scale altitude changes practical.
+    // Climb and descent speed, in two stages. Below the threshold a squared
+    // curve, capped to keep city flight controllable; above it a second
+    // squared term makes kilometres of height change practical.
     static let minimumVerticalSpeedMetersPerSecond: Double = 1
     static let lowAltitudeVerticalHeightSquaredSpeedFactor: Double = 1
     static let maximumLowAltitudeVerticalSpeedMetersPerSecond: Double = 100
@@ -52,54 +51,62 @@ nonisolated enum EarthflightTuning {
     static let highAltitudeExcessSquaredSpeedFactor: Double = 0.0015
     static let maximumVerticalSpeedMetersPerSecond: Double = 9_000
 
-    // The one flight ceiling. It exists because RealityKit's render-local
-    // positions are Float: one unit in the last place is 47 metres out here, and
-    // by ten times this height it is 6 km, at which point the globe itself comes
-    // apart. Nothing above is worth reaching either, since the Earth is already
-    // under two degrees wide. Note that the vertical speed cap above is not a
-    // real ceiling: pitching over and using the left stick moves the craft up at
-    // the altitude-scaled horizontal speed instead, which climbs exponentially
-    // and crosses this in about seven seconds. Coming back down the same way
-    // takes under two seconds, so the ceiling is not a trap.
-    // The Moon's mean distance is simply a memorable number in the right place.
+    // The one flight ceiling, the Moon's mean distance. Render-local positions
+    // are Float: out here one unit in the last place is 47 m, and ten times
+    // higher the globe itself comes apart. The vertical speed cap above is not
+    // a ceiling, because pitching over and flying forward climbs at the
+    // height-scaled horizontal speed, which crosses this in seconds; coming
+    // back down the same way is as quick.
     static let maximumEllipsoidHeightMeters: Double = 384_400_000
 
     // MARK: - Jump To
 
-    /// A Jump To places the craft at this fixed clearance above converted ground.
     static let jumpHeightAboveGroundMeters: Double = 1_000
 
     // MARK: - Planetary precision
 
-    // Rebase only when the global craft position has moved this Euclidean ECEF
-    // distance from the current local render origin. This is a precision limit,
-    // not a flight-feel setting.
+    // The render origin moves to the craft once it is this far away in ECEF.
+    // A Float precision limit, not a feel setting.
     static let renderOriginRebaseDistanceMeters: Double = 50_000
 
-    // MARK: - Tile selection and transition
+    // MARK: - Tile detail
 
-    // Cesium refines until projected geometric error is below this many pixels.
-    // Higher values make Cesium drop to coarser distant LODs earlier; lower
-    // values preserve more detail. Nearby tiles still refine from projected error.
-    static let maximumScreenSpaceError: Double = 16
+    // Cesium refines a tile until its geometric error would span fewer than
+    // this many headset pixels. Lower is sharper and loads more: each halving
+    // refines everything about one level further, roughly four times the
+    // tiles. Cesium's own default is 16.
+    static let maximumScreenSpaceErrorHeadsetPixels: Double = 42.5
+
+    // What turns the figure above into an angle. The original M2 Vision Pro
+    // shows about 34 pixels per degree. A fact about the device, not taste.
+    static let headsetPixelsPerDegree: Double = 34
+
+    // The cone, centred on where the head points, that Cesium selects tiles
+    // for. Wider than the display so a quick head turn finds ground already
+    // there; the 90 by 70 degrees once used left gaps at the edges of view.
+    // Wider still loads ground that may never be seen. Keep each under 180.
+    static let tileSelectionHorizontalFieldOfViewDegrees: Double = 120
+    static let tileSelectionVerticalFieldOfViewDegrees: Double = 110
+
+    // When more than this many of a tile's selected descendants are still
+    // loading, Cesium shows the tile itself instead and loads it first. Lower
+    // gets coarse ground on screen sooner after a turn; higher waits for more
+    // of the detail. Cesium's default.
+    static let loadingDescendantLimit: UInt32 = 20
+
+    // Tile requests in flight at once. This limits loading, not what is shown
+    // or cached.
     static let maximumSimultaneousTileLoads: UInt32 = 8
 
-    // Cesium's transient in-memory cache only, not persistent storage. 1 GiB
-    // trades additional memory pressure on the original M2 Vision Pro for fewer
-    // reloads after looking away from a tile and back.
+    // Cesium's in-memory tile cache, counted as decoded texels plus geometry.
+    // RealityKit holds the texels Cesium counts here, as GPU textures with
+    // mipmaps. Nothing is cached on disk.
     static let maximumCachedBytes: Int64 = 1024 * 1024 * 1024
-    // Earthflight no longer reads Cesium's fade list, so the transition period
-    // buys it nothing, while enabling it permanently forces Cesium's frustum and
-    // fog culling off. That both floods the selection with tiles right around
-    // the globe and makes `forbidTileHoles` a no-op, since forbidHoles acts only
-    // on culled tiles. Off restores both culling stages.
-    static let lodTransitionsEnabled = false
-    static let lodTransitionLengthSeconds: Float = 0.3
 
-    // In cesium-native 0.64 this affects culled descendants only; it is not a
-    // general replacement-coverage guarantee. Leave the accepted value alone.
+    // Despite its documentation, in cesium-native 0.64 this only makes tiles
+    // outside the view load and report upward. It is not a guarantee that a
+    // refinement leaves no holes.
     static let forbidTileHoles = true
-
 
     // MARK: - Presentation
 
@@ -107,103 +114,91 @@ nonisolated enum EarthflightTuning {
 
     // MARK: - Giant mode
 
-    // The D-pad steps the wearer's size in doublings: up grows, down shrinks.
-    // Zero is the accepted one-to-one world and the floor; this is the ceiling,
-    // and it is a count rather than a multiplier so that every level is an
-    // exact power of two and shrinking always lands back on exactly 1. See
-    // GiantMode for why growing the wearer means shrinking the world, and why
-    // nothing else in the app has to know about it.
+    // The wearer's size steps in doublings: D-pad up grows, down shrinks. Zero
+    // is the one-to-one world and the floor. A count rather than a multiplier,
+    // so every level is an exact power of two and shrinking always lands back
+    // on exactly 1.
     //
-    // Twelve doublings is 4,096: the eyes effectively span 258 metres, so a
-    // city two kilometres across becomes a half-metre model in front of the
-    // wearer, and twelve presses of D-pad down comes back to baseline. Going
-    // further mostly costs comfort: the world closes in on the wearer's face,
-    // so the ground has to be half a metre times the multiplier below the craft
-    // -- about two kilometres at this ceiling -- before it is even an arm's
-    // length away, and the wearer's own head movement swings Cesium's selection
-    // camera by that much too. Twelve is the accepted ceiling.
+    // Twelve doublings is 4,096: the eyes effectively span 258 m, and a city
+    // two kilometres across becomes a half-metre model. Going further mostly
+    // costs comfort, because the world closes in on the face: the ground has to
+    // be half a metre times the multiplier below the craft before it is an
+    // arm's length away, about two kilometres at this ceiling.
     static let maximumGiantDoublings = 12
 
-    // How long one doubling takes. The size always changes at this rate, so two
-    // quick presses take twice as long and arrive without a pause in the
-    // middle. Set to zero to step instantly, as the release decays do. A
-    // quarter of a second is the accepted value.
+    // Seconds per doubling. The size always changes at this rate, so two quick
+    // presses take twice as long and arrive without a pause between them. Zero
+    // steps instantly.
     static let giantSizeTransitionSeconds: Double = 0.25
 
     // MARK: - Head-up display
 
-    // Two marks that say where the craft is pointed and where level is: a ring
-    // on the nose axis and a bar lying in the local horizontal plane, with a gap
-    // the ring sits in. Sizes are angles, not metres, because the marks are put
-    // far enough away to be effectively collimated; `HeadUpDisplay` explains why
-    // distance is what stops physical head movement from moving them off the
-    // axis they report.
+    // A ring on the nose axis and a bar in the local horizontal plane, with a
+    // gap the ring sits in. Sizes are angles, not metres, because the marks
+    // are far enough away to be effectively collimated; see `HeadUpDisplay`.
     static let headUpDisplayDistanceMeters: Float = 1_000
     static let headUpDisplayColour = SIMD3<Double>(0.12, 0.75, 0.12)
     static let headUpDisplayOpacity: Float = 0.45
 
-    // A ring leaves whatever the nose is aimed at visible through the middle.
-    // The stroke is measured radially and is ignored by a filled disc.
+    // A ring leaves what the nose points at visible through its middle. The
+    // stroke is measured radially and ignored by a filled disc.
     static let headUpDisplayCircleStyle = HeadUpDisplayCircleStyle.outlineRing
     static let headUpDisplayCircleDiameterDegrees = 1.5
     static let headUpDisplayCircleStrokeDegrees = 0.1
 
-    // Arm length is measured from the edge of the gap, so each arm covers this
-    // many degrees. The gap margin is the clearance between the ring's edge and
-    // each arm; the gap itself is derived from the ring, so it always fits.
+    // Each arm covers this many degrees from the edge of the gap. The margin is
+    // the clearance between the ring and each arm; the gap itself is derived
+    // from the ring, so it always fits.
     static let headUpDisplayHorizonBarThicknessDegrees = 0.15
     static let headUpDisplayHorizonBarArmLengthDegrees = 5.0
     static let headUpDisplayHorizonBarGapMarginDegrees = 0.5
 
     // MARK: - Sky
 
-    // Sky sphere radius while the craft is low. Above roughly 3,000 km the dome
-    // grows instead, so the whole globe stays inside it; see SkyDome.radiusMeters.
+    // Sky sphere radius while the craft is low. Above about 3,000 km the dome
+    // grows so the whole globe stays inside it; see `SkyDome.radiusMeters`.
     static let skyDomeRadiusMeters: Float = 9_000_000
 
-    // Rows in the sky gradient texture. Each row covers 180/rows degrees, so
-    // 2,048 resolves the roughly two-degree bright limb seen from low orbit.
+    // Rows in the sky gradient texture, each covering 180/rows degrees. 2,048
+    // resolves the roughly two-degree bright limb seen from low orbit.
     static let skyGradientRowCount = 2_048
 
-    // Rays averaged per row, and the height above which that averaging is worth
-    // paying for. Seen from tens of thousands of kilometres the bright limb
-    // narrows to less than one row, and point sampling would let it flicker
-    // between rows as the craft climbs; averaging turns it into a correctly
-    // dimmed hairline instead. Lower down the limb is many rows wide and the
+    // Rays averaged per row above the given height. From tens of thousands of
+    // kilometres the bright limb is narrower than a row, and a single ray per
+    // row would let it flicker between rows during a climb. Lower down the
     // extra rays only slow the rebuild.
     static let skyGradientRaysPerRow = 4
     static let skySupersampleHeightMeters: Double = 10_000_000
 
-    // Rebuild the gradient once the craft's height has moved further than the
-    // larger of these. They are deliberately small: at 1,000 metres, climbing
-    // 500 metres moved some texels by 63 of the 255 available levels, which is
-    // the stepping the owner saw. The frame, not this threshold, is the real
-    // throttle, because at most one rebuild starts per scene update. These
-    // values only stop pointless work while drifting or hovering.
+    // The gradient is rebuilt once the height has moved further than the
+    // larger of these. They are deliberately small: 500 m was once used, and
+    // climbing that far from 1,000 m moved some texels by 63 of 255 levels,
+    // which showed as visible steps. At most one rebuild runs at a time, so the
+    // frame rate, not these, is the real throttle.
     static let skyRebuildHeightStepMeters: Double = 25
     static let skyRebuildHeightFraction: Double = 0.0001
 
-    // Colour painted where a ray reaches the Earth. It shows only through gaps in
-    // the streamed terrain, and stays the accepted dull sandy brown so a brief
-    // gap is less stark than bare sky would be.
+    // Painted where a ray reaches the Earth, so it shows only through gaps in
+    // the streamed terrain. A dull sandy brown makes a brief gap less stark
+    // than bare sky would.
     static let skyGroundFillColour = SIMD3<Double>(0.62, 0.56, 0.46)
 
-    // Fraction of the ground's colour that one sea-level vertical column of air
-    // replaces with haze, applied as 1 - exp(-fraction * airMass). About a tenth
-    // is clear-air Rayleigh extinction: distant ground near the horizon crosses
-    // tens of columns and disappears into the horizon colour, while ground a few
-    // hundred metres below the craft is barely touched.
+    // Fraction of the ground fill that one sea-level column of air replaces
+    // with haze, applied as 1 - exp(-fraction * airMass). About a tenth is
+    // clear-air Rayleigh extinction: distant ground near the horizon crosses
+    // tens of columns and fades into the horizon colour; ground a few hundred
+    // metres below is barely touched.
     static let skyGroundHazeFractionPerAirMass: Double = 0.1
 
-    // The scattered colour of the sky seen against space, indexed by air mass in
-    // sea-level vertical columns (see SkyDome). This table is the whole palette.
+    // The colour of the sky against space, indexed by air mass in sea-level
+    // vertical columns (see `SkyDome`). This table is the whole palette.
     //
-    // Air mass 1 is the zenith from sea level and 45 is the sea-level horizon, so
-    // those two rows are the blue and the pale band the owner accepted at ground
-    // level. The rows below 1 carry the sky from that blue down to black as the
-    // air above thins: the zenith reads about 0.3 at 10 km, 0.03 at 30 km and
-    // 0.00001 at the Karman line. Nothing here mentions altitude, because air mass
-    // already carries it. Values interpolate linearly and hold past both ends.
+    // Air mass 1 is the zenith from sea level and 45 the sea-level horizon:
+    // the blue and the pale band at ground level. The rows below 1 take the sky
+    // from that blue to black as the air above thins: the zenith reads about
+    // 0.3 at 10 km, 0.03 at 30 km and 0.00001 at the Karman line. Nothing here
+    // mentions altitude, because air mass already carries it. Stops are joined
+    // smoothly and hold past both ends.
     static let skyAirMassColourStops: [(airMass: Double, colour: SIMD3<Double>)] = [
         (0.00, SIMD3(0.000, 0.000, 0.008)),
         (0.04, SIMD3(0.004, 0.012, 0.055)),
@@ -218,34 +213,29 @@ nonisolated enum EarthflightTuning {
 
     // MARK: - Stars
 
-    // Total points scattered over the whole sphere, so roughly an eighth of them
-    // fall inside the field of view at any moment.
+    // Points over the whole sphere; roughly an eighth are in view at a time.
     static let starCount = 900
 
-    // Angular width of a star's quad. The dot inside it is round and fades out
-    // before the edge, so the star looks about four fifths of these figures: on
-    // the original M2 Vision Pro's roughly 34 pixels per degree, one to three
-    // pixels across. The first pass used hard-edged quads at 0.06 to 0.16 and
-    // they read as visible squares, twice the size they wanted to be.
+    // Angular width of a star's quad. The soft dot inside fades out before the
+    // edge, so a star looks about four fifths of these: one to three pixels on
+    // the M2 Vision Pro. Hard-edged quads read as squares.
     static let starSmallestAngularSizeDegrees = 0.04
     static let starLargestAngularSizeDegrees = 0.10
 
-    // Stars sit at this fraction of the sky dome's radius, which keeps them
-    // inside it and therefore outside everything Cesium can draw.
+    // Stars sit at this fraction of the dome's radius: inside the dome, and
+    // beyond everything Cesium draws.
     static let starFieldRadiusFraction: Float = 0.95
 
-    // One period per bank, and the count of these is the number of banks. Values
-    // that do not divide into each other keep the banks from drifting back into
-    // step. Longer periods are a calmer sky; much shorter ones strobe.
+    // One twinkle period per bank of stars; the count is the number of banks.
+    // Periods that do not divide into one another keep the banks from falling
+    // back into step. Much shorter periods strobe.
     static let starTwinklePeriodsSeconds: [Double] = [2.3, 3.1, 4.7, 5.9, 7.3, 8.9, 11.3, 13.7]
 
     // A bank's opacity swings between base minus amplitude and base plus
-    // amplitude. The base is deliberately high: every star in a bank breathes
-    // together, so a deep swing would read as banks rather than as twinkling.
-    // Mipmapping a one-pixel star averages its soft dot down to roughly three
-    // fifths of full white, so the floor sits higher than it otherwise would.
-    // Raise the base to brighten every star; raise the amplitude for a deeper
-    // shimmer, keeping the two summing to no more than one.
+    // amplitude; keep the two summing to no more than one. The base is high
+    // because a whole bank breathes together, and a deep swing reads as banks
+    // rather than twinkling. Mipmapping averages a one-pixel star's soft dot
+    // down to about three fifths of white, which also argues for a high base.
     static let starTwinkleBaseBrightness = 0.80
     static let starTwinkleAmplitude = 0.20
 

@@ -11,25 +11,19 @@ struct EarthflightTests {
     @MainActor
     func altitudeAndBoostSpeed() {
         let lowAltitude = FlightState()
-        lowAltitude.leftStick = [0, 1]
-        lowAltitude.advance(deltaTime: 0.1)
+        lowAltitude.advance(input: FlightInput(leftStick: [0, 1]), deltaTime: 0.1)
         let lowAltitudeDistance = simd_length(lowAltitude.position - SIMD3<Float>(0, 1.5, 0))
 
         let highAltitude = FlightState()
-        highAltitude.isAscending = true
         for _ in 0..<100 {
-            highAltitude.advance(deltaTime: 0.1)
+            highAltitude.advance(input: FlightInput(vertical: 1), deltaTime: 0.1)
         }
-        highAltitude.isAscending = false
         let highStart = highAltitude.position
-        highAltitude.leftStick = [0, 1]
-        highAltitude.advance(deltaTime: 0.1)
+        highAltitude.advance(input: FlightInput(leftStick: [0, 1]), deltaTime: 0.1)
         let highAltitudeDistance = simd_length(highAltitude.position - highStart)
 
         let boosted = FlightState()
-        boosted.leftStick = [0, 1]
-        boosted.isBoosting = true
-        boosted.advance(deltaTime: 0.1)
+        boosted.advance(input: FlightInput(leftStick: [0, 1], isBoosting: true), deltaTime: 0.1)
         let boostedDistance = simd_length(boosted.position - SIMD3<Float>(0, 1.5, 0))
 
         #expect(highAltitudeDistance > lowAltitudeDistance)
@@ -45,8 +39,7 @@ struct EarthflightTests {
     @MainActor
     func invertedPitch() {
         let flightState = FlightState()
-        flightState.rightStick = [0, 1]
-        flightState.advance(deltaTime: 0.1)
+        flightState.advance(input: FlightInput(rightStick: [0, 1]), deltaTime: 0.1)
 
         let forwardAfterPitch = flightState.orientation.act(SIMD3<Float>(0, 0, -1))
 
@@ -57,10 +50,8 @@ struct EarthflightTests {
     @MainActor
     func combinedYawAndPitchStayLevel() {
         let flightState = FlightState()
-        flightState.rightStick = [0.8, 0.8]
-
         for _ in 0..<240 {
-            flightState.advance(deltaTime: 1.0 / 60.0)
+            flightState.advance(input: FlightInput(rightStick: [0.8, 0.8]), deltaTime: 1.0 / 60.0)
         }
 
         let craftRight = flightState.orientation.act(SIMD3<Float>(1, 0, 0))
@@ -72,11 +63,10 @@ struct EarthflightTests {
     func craftDeltaTransformCoherence() {
         let flightState = FlightState()
         let worldFromCraftAtLaunch = flightState.renderLocalFromCraft
-        flightState.rightStick = [0.4, -0.3]
-        flightState.leftStick = [0.7, 1]
+        let input = FlightInput(leftStick: [0.7, 1], rightStick: [0.4, -0.3])
 
         for _ in 0..<60 {
-            flightState.advance(deltaTime: 1.0 / 60.0)
+            flightState.advance(input: input, deltaTime: 1.0 / 60.0)
         }
 
         let worldFromRenderLocal = FlightState.worldFromRenderLocal(
@@ -95,12 +85,8 @@ struct EarthflightTests {
     @MainActor
     func viewReset() {
         let flightState = FlightState()
-        flightState.rightStick = [0.3, -0.2]
-        flightState.advance(deltaTime: 0.1)
-        flightState.rightStick = .zero
-        flightState.isRollingRight = true
-        flightState.advance(deltaTime: 0.1)
-        flightState.isRollingRight = false
+        flightState.advance(input: FlightInput(rightStick: [0.3, -0.2]), deltaTime: 0.1)
+        flightState.advance(input: FlightInput(roll: 1), deltaTime: 0.1)
 
         flightState.resetView()
 
@@ -113,42 +99,33 @@ struct EarthflightTests {
         #expect(simd_length(up - SIMD3<Float>(0, 1, 0)) < 0.0001)
     }
 
-    @Test("Neutralised input stops the craft without moving or turning it")
+    @Test("A vanished controller stops the craft without moving or turning it")
     @MainActor
-    func neutralisedInputStopsTheCraftInPlace() {
+    func vanishedControllerStopsTheCraftInPlace() {
         let flightState = FlightState()
-        flightState.leftStick = [0.7, 1]
-        flightState.rightStick = [0.4, -0.3]
-        flightState.isAscending = true
-        flightState.isVerticalBoosting = true
-        flightState.isBoosting = true
-        flightState.isRollingRight = true
-        flightState.advance(deltaTime: 0.2)
+        let input = FlightInput(
+            leftStick: [0.7, 1],
+            rightStick: [0.4, -0.3],
+            vertical: 1,
+            roll: 1,
+            isBoosting: true,
+            isVerticalBoosting: true
+        )
+        flightState.advance(input: input, deltaTime: 0.2)
 
         let positionAtDisconnect = flightState.craftEcefPosition
         let orientationAtDisconnect = flightState.orientation
 
-        flightState.neutraliseInput()
-
-        #expect(flightState.leftStick == .zero)
-        #expect(flightState.rightStick == .zero)
-        #expect(!flightState.isAscending)
-        #expect(!flightState.isDescending)
-        #expect(!flightState.isRollingLeft)
-        #expect(!flightState.isRollingRight)
-        #expect(!flightState.isBoosting)
-        #expect(!flightState.isVerticalBoosting)
-        #expect(simd_distance(flightState.craftEcefPosition, positionAtDisconnect) < 1e-4)
-
-        // Without clearing the release tails, the last reported stick and vertical
-        // values would keep coasting the craft for movementReleaseDurationSeconds
-        // after the controller vanished. Cover more than that whole window.
+        // Without dropping the release fades, the last reported stick and
+        // vertical values would keep the craft coasting for
+        // movementReleaseDurationSeconds after the controller vanished. Cover
+        // more than that whole window.
         let frameDuration = 1.0 / 30.0
         let frameCount = Int(
             (Double(EarthflightTuning.movementReleaseDurationSeconds) * 2) / frameDuration
         )
         for _ in 0..<frameCount {
-            flightState.advance(deltaTime: frameDuration)
+            flightState.advance(input: nil, deltaTime: frameDuration)
             #expect(simd_distance(flightState.craftEcefPosition, positionAtDisconnect) < 1e-4)
         }
 
@@ -158,6 +135,12 @@ struct EarthflightTests {
         #expect(simd_length(forward - orientationAtDisconnect.act(SIMD3<Float>(0, 0, -1))) < 0.0001)
         #expect(simd_length(right - orientationAtDisconnect.act(SIMD3<Float>(1, 0, 0))) < 0.0001)
         #expect(simd_length(up - orientationAtDisconnect.act(SIMD3<Float>(0, 1, 0))) < 0.0001)
+
+        // A controller that comes back at rest does not revive the old fades.
+        for _ in 0..<frameCount {
+            flightState.advance(input: FlightInput(), deltaTime: frameDuration)
+            #expect(simd_distance(flightState.craftEcefPosition, positionAtDisconnect) < 1e-4)
+        }
     }
 
     @Test("Steering without translation input leaves the global position exactly unchanged")
@@ -170,14 +153,11 @@ struct EarthflightTests {
         let heightAtRest = flightState.ellipsoidHeightMeters
 
         // Yaw, pitch and roll must still work while the craft holds its position.
-        flightState.rightStick = [0.6, -0.4]
-        flightState.isRollingRight = true
-        flightState.isBoosting = true
+        let steering = FlightInput(rightStick: [0.6, -0.4], roll: 1, isBoosting: true)
         for _ in 0..<600 {
-            flightState.advance(deltaTime: 1.0 / 90.0)
-            // Exact, not near. `integrate` bypasses a zero displacement outright,
-            // so no ECEF -> cartographic -> ECEF round trip runs to perturb the
-            // position by the nanometre a minute of idling used to accumulate.
+            flightState.advance(input: steering, deltaTime: 1.0 / 90.0)
+            // Exact, not near: a zero displacement skips the ECEF ->
+            // cartographic -> ECEF round trip that would otherwise creep.
             #expect(flightState.craftEcefPosition == ecefAtRest)
             #expect(flightState.longitudeDegrees == longitudeAtRest)
             #expect(flightState.latitudeDegrees == latitudeAtRest)
@@ -187,16 +167,14 @@ struct EarthflightTests {
 
         // A released stick decays to exactly zero, so the tail must settle rather
         // than creep, and deliberate input must still move the craft afterwards.
-        flightState.leftStick = [0, 1]
-        flightState.advance(deltaTime: 1.0 / 90.0)
-        flightState.leftStick = .zero
+        flightState.advance(input: FlightInput(leftStick: [0, 1]), deltaTime: 1.0 / 90.0)
         for _ in 0..<120 {
-            flightState.advance(deltaTime: 1.0 / 90.0)
+            flightState.advance(input: FlightInput(), deltaTime: 1.0 / 90.0)
         }
         let ecefAfterRelease = flightState.craftEcefPosition
         #expect(ecefAfterRelease != ecefAtRest)
         for _ in 0..<120 {
-            flightState.advance(deltaTime: 1.0 / 90.0)
+            flightState.advance(input: FlightInput(), deltaTime: 1.0 / 90.0)
             #expect(flightState.craftEcefPosition == ecefAfterRelease)
         }
     }
@@ -219,14 +197,15 @@ struct EarthflightTests {
             asin(min(1, max(-1, flightState.orientation.act(SIMD3<Float>(0, 0, -1)).y)))
         }
 
+        let held = FlightInput(rightStick: [1, 0.5])
+        let released = FlightInput()
         let flightState = FlightState()
-        flightState.rightStick = [1, 0.5]
         for _ in 0..<30 {
-            flightState.advance(deltaTime: frameDuration)
+            flightState.advance(input: held, deltaTime: frameDuration)
         }
         let headingBeforeLastHeldFrame = heading(flightState)
         let pitchBeforeLastHeldFrame = pitch(flightState)
-        flightState.advance(deltaTime: frameDuration)
+        flightState.advance(input: held, deltaTime: frameDuration)
         let headingPerHeldFrame = heading(flightState) - headingBeforeLastHeldFrame
         let pitchPerHeldFrame = pitch(flightState) - pitchBeforeLastHeldFrame
         #expect(headingPerHeldFrame != 0)
@@ -236,8 +215,7 @@ struct EarthflightTests {
         // is already turning less than the held stick was.
         let headingAtRelease = heading(flightState)
         let pitchAtRelease = pitch(flightState)
-        flightState.rightStick = .zero
-        flightState.advance(deltaTime: frameDuration)
+        flightState.advance(input: released, deltaTime: frameDuration)
         let firstCoastFrame = heading(flightState) - headingAtRelease
         #expect(firstCoastFrame / headingPerHeldFrame > 0)
         #expect(abs(firstCoastFrame) < abs(headingPerHeldFrame))
@@ -245,7 +223,7 @@ struct EarthflightTests {
         // A linear ramp coasts half of what the held stick would have covered, so
         // the whole tail stays well inside the same number of held frames.
         for _ in 0..<tailFrames {
-            flightState.advance(deltaTime: frameDuration)
+            flightState.advance(input: released, deltaTime: frameDuration)
         }
         let headingCoast = heading(flightState) - headingAtRelease
         let pitchCoast = pitch(flightState) - pitchAtRelease
@@ -258,21 +236,19 @@ struct EarthflightTests {
         let settledHeading = heading(flightState)
         let settledPitch = pitch(flightState)
         for _ in 0..<120 {
-            flightState.advance(deltaTime: frameDuration)
+            flightState.advance(input: released, deltaTime: frameDuration)
             #expect(heading(flightState) == settledHeading)
             #expect(pitch(flightState) == settledPitch)
         }
 
         // A right-stick click levels the craft, so the tail must not turn it back.
         let resetting = FlightState()
-        resetting.rightStick = [1, 0.5]
         for _ in 0..<30 {
-            resetting.advance(deltaTime: frameDuration)
+            resetting.advance(input: held, deltaTime: frameDuration)
         }
-        resetting.rightStick = .zero
         resetting.resetView()
         for _ in 0..<tailFrames {
-            resetting.advance(deltaTime: frameDuration)
+            resetting.advance(input: released, deltaTime: frameDuration)
             #expect(heading(resetting) == 0)
             #expect(pitch(resetting) == 0)
         }
@@ -294,15 +270,25 @@ struct EarthflightTests {
 
     @Test("Cesium Native converts the WGS84 equator to ECEF")
     func cesiumNativeSmokeTest() {
-        #expect(CesiumBridge.runSmokeTest().hasPrefix("Cesium Native smoke test: OK"))
+        let ecef = CesiumBridge.ecefPosition(
+            withLongitudeDegrees: 0,
+            latitudeDegrees: 0,
+            ellipsoidHeightMeters: 0
+        )
+        #expect(simd_distance(ecef, SIMD3<Double>(6_378_137, 0, 0)) < 0.001)
     }
 
     @Test("Cesium Native round-trips a real WGS84 location through ECEF")
     func cesiumNativeCartographicRoundTrip() {
-        #expect(
-            CesiumBridge.runCartographicRoundTripSmokeTest() ==
-                "Cesium Native cartographic round-trip: OK"
+        let ecef = CesiumBridge.ecefPosition(
+            withLongitudeDegrees: -0.1278,
+            latitudeDegrees: 51.5074,
+            ellipsoidHeightMeters: 100
         )
+        let recovered = CesiumBridge.cartographicDegrees(fromEcefPosition: ecef)
+        #expect(abs(recovered.x - -0.1278) < 1e-10)
+        #expect(abs(recovered.y - 51.5074) < 1e-10)
+        #expect(abs(recovered.z - 100) < 0.001)
     }
 
     @Test("Google child URLs preserve their session and receive the API key once")
@@ -331,10 +317,30 @@ struct EarthflightTests {
 
     @Test("Local horizontal origin and RealityKit axes remain metre-scale")
     func localHorizontalFrame() {
-        #expect(
-            CesiumBridge.runLocalHorizontalFrameSmokeTest() ==
-                "RealityKit local horizontal frame: OK"
+        // X east, Y geodetic up, Z south, unscaled, at the launch region.
+        let longitude = -0.1278 * Double.pi / 180
+        let latitude = 51.5074 * Double.pi / 180
+        let origin = CesiumBridge.ecefPosition(
+            withLongitudeDegrees: -0.1278,
+            latitudeDegrees: 51.5074,
+            ellipsoidHeightMeters: 1_000
         )
+        let ecefFromLocal = CesiumBridge.ecefFromLocalHorizontal(atEcefPosition: origin)
+        let east = SIMD3<Double>(-sin(longitude), cos(longitude), 0)
+        let up = SIMD3<Double>(
+            cos(latitude) * cos(longitude),
+            cos(latitude) * sin(longitude),
+            sin(latitude)
+        )
+        let south = simd_cross(east, up)
+
+        // Cesium takes up from the ellipsoid scaled out through the point, which
+        // leans from the true geodetic normal by about height * e² / R: half a
+        // microradian at 1 km. A wrong axis or sign would be out by order one.
+        #expect(simd_distance(simd_make_double3(ecefFromLocal.columns.0), east) < 1e-5)
+        #expect(simd_distance(simd_make_double3(ecefFromLocal.columns.1), up) < 1e-5)
+        #expect(simd_distance(simd_make_double3(ecefFromLocal.columns.2), south) < 1e-5)
+        #expect(simd_distance(simd_make_double3(ecefFromLocal.columns.3), origin) < 1e-6)
     }
 
     @Test("Floating-origin changes preserve represented craft and anchored geometry")
@@ -380,9 +386,9 @@ struct EarthflightTests {
 
         let objectInRenderA = renderFrameA.localFromEcef * SIMD4<Double>(objectEcefPosition, 1)
         let objectInRenderB = renderFrameB.localFromEcef * SIMD4<Double>(objectEcefPosition, 1)
-        let representedObjectA = FlightState.realityKitMatrix(worldFromRenderLocalA) *
+        let representedObjectA = simd_float4x4(worldFromRenderLocalA) *
             SIMD4<Float>(Float(objectInRenderA.x), Float(objectInRenderA.y), Float(objectInRenderA.z), 1)
-        let representedObjectB = FlightState.realityKitMatrix(worldFromRenderLocalB) *
+        let representedObjectB = simd_float4x4(worldFromRenderLocalB) *
             SIMD4<Float>(Float(objectInRenderB.x), Float(objectInRenderB.y), Float(objectInRenderB.z), 1)
 
         // At the 50 km rebase scale, Float ULP and two matrix products remain well
@@ -433,9 +439,8 @@ struct EarthflightTests {
 
         let levelFlight = FlightState()
         let levelStartHeight = levelFlight.ellipsoidHeightMeters
-        levelFlight.leftStick = [0.7, 1]
         for _ in 0..<5_000 {
-            levelFlight.advance(deltaTime: 0.1)
+            levelFlight.advance(input: FlightInput(leftStick: [0.7, 1]), deltaTime: 0.1)
         }
         #expect(abs(levelFlight.ellipsoidHeightMeters - levelStartHeight) < 0.01)
 
@@ -444,9 +449,8 @@ struct EarthflightTests {
             latitudeDegrees: 80,
             ellipsoidHeightMeters: 800
         )
-        highLatitudeFlight.leftStick = [0.6, 1]
         for _ in 0..<1_000 {
-            highLatitudeFlight.advance(deltaTime: 0.1)
+            highLatitudeFlight.advance(input: FlightInput(leftStick: [0.6, 1]), deltaTime: 0.1)
         }
         #expect(highLatitudeFlight.longitudeDegrees.isFinite)
         #expect(highLatitudeFlight.latitudeDegrees.isFinite)
@@ -457,9 +461,8 @@ struct EarthflightTests {
             latitudeDegrees: 0,
             ellipsoidHeightMeters: 300
         )
-        antimeridianFlight.leftStick = [1, 0]
         for _ in 0..<100 {
-            antimeridianFlight.advance(deltaTime: 0.1)
+            antimeridianFlight.advance(input: FlightInput(leftStick: [1, 0]), deltaTime: 0.1)
         }
         #expect(antimeridianFlight.longitudeDegrees >= -180)
         #expect(antimeridianFlight.longitudeDegrees <= 180)
@@ -469,23 +472,17 @@ struct EarthflightTests {
 
         let verticalFlight = FlightState()
         let verticalStartHeight = verticalFlight.ellipsoidHeightMeters
-        verticalFlight.isAscending = true
-        verticalFlight.advance(deltaTime: 0.1)
-        verticalFlight.isAscending = false
+        verticalFlight.advance(input: FlightInput(vertical: 1), deltaTime: 0.1)
         let ascendedHeight = verticalFlight.ellipsoidHeightMeters
-        verticalFlight.isDescending = true
-        verticalFlight.advance(deltaTime: 0.1)
+        verticalFlight.advance(input: FlightInput(vertical: -1), deltaTime: 0.1)
 
         #expect(ascendedHeight > verticalStartHeight)
         #expect(verticalFlight.ellipsoidHeightMeters < ascendedHeight)
 
         let pitchedFlight = FlightState()
-        pitchedFlight.rightStick = [0, -0.8]
-        pitchedFlight.advance(deltaTime: 0.1)
-        pitchedFlight.rightStick = .zero
+        pitchedFlight.advance(input: FlightInput(rightStick: [0, -0.8]), deltaTime: 0.1)
         let pitchedStartHeight = pitchedFlight.ellipsoidHeightMeters
-        pitchedFlight.leftStick = [0, 1]
-        pitchedFlight.advance(deltaTime: 0.1)
+        pitchedFlight.advance(input: FlightInput(leftStick: [0, 1]), deltaTime: 0.1)
         #expect(pitchedFlight.ellipsoidHeightMeters > pitchedStartHeight)
     }
 
@@ -590,32 +587,20 @@ struct EarthflightTests {
             latitudeDegrees: 0
         )
         #expect(abs(egm96 - 17.16) < 0.1)
-
-        let meanSeaLevelGroundElevationMeters = 123.45
-        let groundEllipsoidHeightMeters = meanSeaLevelGroundElevationMeters + egm96
-        let destinationEllipsoidHeightMeters =
-            groundEllipsoidHeightMeters + EarthflightTuning.jumpHeightAboveGroundMeters
-        #expect(abs(groundEllipsoidHeightMeters - (meanSeaLevelGroundElevationMeters + egm96)) < 1e-12)
-        #expect(
-            abs(
-                destinationEllipsoidHeightMeters -
-                    (groundEllipsoidHeightMeters + EarthflightTuning.jumpHeightAboveGroundMeters)
-            ) < 1e-12
-        )
     }
 
-    @Test("Atomic jump preserves controls and resets orientation and render origin")
+    @Test("Atomic jump drops the movement fade and resets orientation and render origin")
     @MainActor
     func atomicJumpStateInvariants() {
         let flightState = FlightState()
-        flightState.rightStick = [0.45, -0.3]
-        flightState.leftStick = [0.6, 0.8]
-        flightState.isAscending = true
-        flightState.isRollingRight = true
-        flightState.isBoosting = true
-        flightState.advance(deltaTime: 0.2)
-        let preservedLeftStick = flightState.leftStick
-        let preservedRightStick = flightState.rightStick
+        let held = FlightInput(
+            leftStick: [0.6, 0.8],
+            rightStick: [0.45, -0.3],
+            vertical: 1,
+            roll: 1,
+            isBoosting: true
+        )
+        flightState.advance(input: held, deltaTime: 0.2)
 
         let groundEllipsoidHeightMeters = 2_345.0
         flightState.jump(
@@ -647,9 +632,6 @@ struct EarthflightTests {
         #expect(simd_length(forward - SIMD3<Float>(0, 0, -1)) < 0.0001)
         #expect(simd_length(right - SIMD3<Float>(1, 0, 0)) < 0.0001)
         #expect(simd_length(up - SIMD3<Float>(0, 1, 0)) < 0.0001)
-        #expect(flightState.leftStick == preservedLeftStick)
-        #expect(flightState.rightStick == preservedRightStick)
-        #expect(flightState.isAscending && flightState.isRollingRight && flightState.isBoosting)
         #expect(simd_length(flightState.renderLocalPosition) < 0.001)
 
         let worldFromCraftAtLaunch = matrix_identity_double4x4
@@ -661,6 +643,14 @@ struct EarthflightTests {
             worldFromRenderLocal * flightState.renderLocalFromCraft,
             worldFromCraftAtLaunch
         ) < 1e-8)
+
+        // The fade from before the jump must not carry the craft away from the
+        // destination, while input still held moves it as normal.
+        let arrival = flightState.craftEcefPosition
+        flightState.advance(input: FlightInput(), deltaTime: 0.1)
+        #expect(flightState.craftEcefPosition == arrival)
+        flightState.advance(input: held, deltaTime: 0.1)
+        #expect(flightState.craftEcefPosition != arrival)
     }
 
     @Test("The sky gradient follows air mass from sea level to a distant horizon")
@@ -716,19 +706,11 @@ struct EarthflightTests {
 
     @Test("Closed-form zenith air mass matches the march and falls off monotonically")
     func zenithAirMassClosedForm() {
-        // `SkyAtmosphere.zenithAirMass` replaces the general 64-sample march for
-        // the one case `StarField.visibility` actually needs, a straight-up ray.
-        // It is exact for that ray (altitude grows linearly with distance
-        // travelled, so the exponential-density integral has a closed
-        // antiderivative); the march only disagrees by its own finite-sample
-        // quadrature error, which is largest near sea level (about 0.002 of one
-        // vertical column, confirmed against a standalone integration of the
-        // same march here) and shrinks quickly above it. An independent audit
-        // swept the whole height range on the 0-1 star-visibility scale, where
-        // the fade already compresses that error, and found at most about
-        // 0.000566, at around 15 km where the fade curve is steepest. 3e-3 on
-        // raw air mass and 1e-3 on visibility both leave headroom over their
-        // measured worst case without hiding a real regression.
+        // `SkyAtmosphere.zenithAirMass` is exact for a straight-up ray; the
+        // march differs only by its own quadrature error, largest near sea
+        // level at about 0.002 of one column. On the star-visibility scale the
+        // worst measured difference is about 0.0006, near 15 km. Both
+        // tolerances leave headroom over those without hiding a regression.
         let heights = [
             -1_000.0,
             0.0,
@@ -786,15 +768,14 @@ struct EarthflightTests {
         // own growth: it multiplies e-fold every 0.56 seconds, or every 0.14 with
         // boost. Ten seconds of it used to reach fifty million kilometres.
         let flightState = FlightState()
-        flightState.rightStick = [0, 1]
         for _ in 0..<120 {
-            flightState.advance(deltaTime: 1.0 / 60)
+            flightState.advance(input: FlightInput(rightStick: [0, 1]), deltaTime: 1.0 / 60)
         }
-        flightState.rightStick = .zero
-        flightState.leftStick = [0, -1]
-        flightState.isBoosting = true
         for _ in 0..<(60 * 30) {
-            flightState.advance(deltaTime: 1.0 / 60)
+            flightState.advance(
+                input: FlightInput(leftStick: [0, -1], isBoosting: true),
+                deltaTime: 1.0 / 60
+            )
         }
 
         #expect(flightState.ellipsoidHeightMeters.isFinite)
@@ -823,7 +804,7 @@ struct EarthflightTests {
             let horizontalSpeed = (
                 EarthflightTuning.minimumHorizontalSpeedMetersPerSecond +
                     EarthflightTuning.horizontalHeightSpeedFactor * height
-            ) * Double(EarthflightTuning.horizontalSpeedMultiplier) *
+            ) * EarthflightTuning.horizontalSpeedMultiplier *
                 EarthflightTuning.boostMultiplier
             let steps = FlightState.integrationStepCount(
                 horizontalDistanceMeters: horizontalSpeed * 0.1,
@@ -925,7 +906,7 @@ struct EarthflightTests {
             let orientation = StarField.earthAnchoredOrientation(
                 renderLocalFromEcef: frame.localFromEcef
             )
-            let ecefFromRenderLocal = FlightState.realityKitMatrix(frame.ecefFromLocal)
+            let ecefFromRenderLocal = simd_float4x4(frame.ecefFromLocal)
             let inRenderLocal = orientation.act(starDirection)
             let inEcef = ecefFromRenderLocal * SIMD4<Float>(inRenderLocal, 0)
             return SIMD3(inEcef.x, inEcef.y, inEcef.z)
@@ -969,8 +950,8 @@ struct EarthflightTests {
 
         let skyZenithsInEcef = frames.map { frame -> SIMD3<Float> in
             let renderLocalFromCraftTangent = frame.localFromEcef * craftTangent.ecefFromLocal
-            let skyOrientation = FlightState.orientation(renderLocalFromCraftTangent)
-            let ecefFromRenderLocal = FlightState.realityKitMatrix(frame.ecefFromLocal)
+            let skyOrientation = simd_quatf(rotationOf: renderLocalFromCraftTangent)
+            let ecefFromRenderLocal = simd_float4x4(frame.ecefFromLocal)
             let zenithInRenderLocal = skyOrientation.act(SIMD3<Float>(0, 1, 0))
             let inEcef = ecefFromRenderLocal * SIMD4<Float>(zenithInRenderLocal, 0)
             return SIMD3(inEcef.x, inEcef.y, inEcef.z)
@@ -984,11 +965,11 @@ struct EarthflightTests {
         // a second time on top of the render frame's rotation.
         let starDirectionsInEcef = frames.map { frame -> SIMD3<Float> in
             let renderLocalFromCraftTangent = frame.localFromEcef * craftTangent.ecefFromLocal
-            let skyOrientation = FlightState.orientation(renderLocalFromCraftTangent)
+            let skyOrientation = simd_quatf(rotationOf: renderLocalFromCraftTangent)
             let starOrientation = skyOrientation.inverse * StarField.earthAnchoredOrientation(
                 renderLocalFromEcef: frame.localFromEcef
             )
-            let ecefFromRenderLocal = FlightState.realityKitMatrix(frame.ecefFromLocal)
+            let ecefFromRenderLocal = simd_float4x4(frame.ecefFromLocal)
             let starInRenderLocal = skyOrientation.act(starOrientation.act(starDirection))
             let inEcef = ecefFromRenderLocal * SIMD4<Float>(starInRenderLocal, 0)
             return SIMD3(inEcef.x, inEcef.y, inEcef.z)
@@ -1024,9 +1005,8 @@ struct EarthflightTests {
         // Nose down: the horizon rises above the nose, and the bar stays exactly
         // perpendicular to geodetic up, which is what "on the horizon" means.
         let pitched = FlightState()
-        pitched.rightStick = [0, 1]
         for _ in 0..<10 {
-            pitched.advance(deltaTime: 0.1)
+            pitched.advance(input: FlightInput(rightStick: [0, 1]), deltaTime: 0.1)
         }
         let geodeticUpInCraft = pitched.orientation.inverse.act(SIMD3<Float>(0, 1, 0))
         #expect(barCentre(pitched).y > 0.1)
@@ -1036,9 +1016,8 @@ struct EarthflightTests {
         // Yaw moves the whole world, not the horizon within the view, so heading
         // must drop out of the bar entirely.
         let yawed = FlightState()
-        yawed.rightStick = [1, 0]
         for _ in 0..<10 {
-            yawed.advance(deltaTime: 0.1)
+            yawed.advance(input: FlightInput(rightStick: [1, 0]), deltaTime: 0.1)
         }
         #expect(simd_length(barCentre(yawed) - nose) < 1e-6)
         #expect(simd_length(barRight(yawed) - SIMD3<Float>(1, 0, 0)) < 1e-6)
@@ -1046,9 +1025,8 @@ struct EarthflightTests {
         // Roll banks the bar by exactly the roll angle while leaving the gap on
         // the nose, so the ring stays put and only the bar turns.
         let rolled = FlightState()
-        rolled.isRollingRight = true
         for _ in 0..<10 {
-            rolled.advance(deltaTime: 0.1)
+            rolled.advance(input: FlightInput(roll: 1), deltaTime: 0.1)
         }
         let rollAngle = EarthflightTuning.rollRateRadiansPerSecond * 1.0
         #expect(simd_length(barCentre(rolled) - nose) < 1e-6)
@@ -1059,9 +1037,8 @@ struct EarthflightTests {
         // At the pitch clamp the projection that builds the bar is at its worst
         // conditioned, and it still has to produce an orthonormal frame.
         let clamped = FlightState()
-        clamped.rightStick = [0, 1]
         for _ in 0..<100 {
-            clamped.advance(deltaTime: 0.1)
+            clamped.advance(input: FlightInput(rightStick: [0, 1]), deltaTime: 0.1)
         }
         let clampedBar = HeadUpDisplay.horizonOrientation(craftOrientation: clamped.orientation)
         let axes = [clampedBar.act(SIMD3<Float>(1, 0, 0)), clampedBar.act(SIMD3<Float>(0, 1, 0))]
@@ -1120,10 +1097,11 @@ struct EarthflightTests {
         // away from the launch values the scale is composed against.
         let flightState = FlightState()
         let worldFromCraftAtLaunch = flightState.renderLocalFromCraft
-        flightState.leftStick = [0.6, 1]
-        flightState.rightStick = [0.3, -0.2]
         for _ in 0..<60 {
-            flightState.advance(deltaTime: 1.0 / 60.0)
+            flightState.advance(
+                input: FlightInput(leftStick: [0.6, 1], rightStick: [0.3, -0.2]),
+                deltaTime: 1.0 / 60.0
+            )
         }
 
         let renderLocalFromCraft = flightState.renderLocalFromCraft

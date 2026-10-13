@@ -1,60 +1,41 @@
 import Foundation
 import GameController
 
+/// The bound Switch Pro Controller. The sticks and held buttons are read once a
+/// frame through `currentInput`; the one-shot buttons call their actions when
+/// pressed.
+///
+/// GameController's face-button names are positional and say nothing about the
+/// glyphs printed on a Nintendo controller. The mapping here was found on the
+/// hardware, not inferred.
 final class SwitchController {
-    private let flightState: FlightState
-    private var connectionObserver: NSObjectProtocol?
-    private var disconnectionObserver: NSObjectProtocol?
-    // The one controller this instance installed handlers on. A disconnect is
-    // matched by object identity and releases the binding with it, so the same
-    // physical controller can bind again through whatever fresh GCController
-    // object GameController hands out when it reconnects.
-    private var boundController: GCController?
-    // Handler writes are deferred onto the main actor, so a sample taken just
-    // before a disconnect can arrive after neutralisation. Each handler carries
-    // the binding it was installed for; a write from a superseded binding is
-    // dropped, which keeps neutralisation final and stops a stale input sticking
-    // on. Counting bindings, rather than capturing the controller, keeps the
-    // handlers free of any reference back to the object holding them.
-    //
-    // The element handlers installed below are inferred main-actor-isolated,
-    // and that matches the framework: GCDevice.h states that `handlerQueue`
-    // defaults to main, and this app never sets it. The deferral is therefore
-    // about ordering against a disconnect, not about reaching the main actor;
-    // it is accepted controller feel and must not be collapsed away.
-    private var bindingGeneration = 0
-    private var isLeftShoulderPressed = false
-    private var isRightShoulderPressed = false
-    private var isLeftTriggerPressed = false
-    private var isRightTriggerPressed = false
     var onJumpToRequested: (@MainActor () -> Void)?
     var onHeadUpDisplayToggleRequested: (@MainActor () -> Void)?
-    // D-pad up and down: how large the wearer is. See `GiantMode`.
+    var onViewResetRequested: (@MainActor () -> Void)?
+    /// D-pad up and down: how large the wearer is. See `GiantMode`.
     var onGrowRequested: (@MainActor () -> Void)?
     var onShrinkRequested: (@MainActor () -> Void)?
 
-    init(flightState: FlightState) {
-        self.flightState = flightState
-    }
+    private var connectionObserver: NSObjectProtocol?
+    private var disconnectionObserver: NSObjectProtocol?
+    // Matched by identity against GameController's live list, so the same
+    // physical controller binds again through the new object GameController
+    // hands out when it reconnects.
+    private var boundController: GCController?
 
-    // Both observer blocks are `@Sendable` and nonisolated: `NotificationCenter`
-    // declares them that way and offers no main-actor-isolated alternative, so
-    // Swift 6 will not let the notification's `GCController` cross from them
-    // into this main-actor type, and no supported annotation can promise that
-    // it may. `GCController.controllers()` is the main actor's own view of the
-    // same fact, and GCController.h asks callers to "adopt both" the array and
-    // the notifications, so the blocks carry nothing but the signal and the
-    // binding is reconciled against that array on this side of the boundary.
+    // NotificationCenter declares these observer blocks `@Sendable` and offers
+    // no main-actor alternative, so Swift 6 will not let the notification's
+    // `GCController` cross into this main-actor type. The blocks carry only the
+    // signal, and the binding is reconciled against `GCController.controllers()`
+    // on this side, which GCController.h asks callers to do anyway.
     //
     // `MainActor.assumeIsolated` is a checked assertion, not a suppression:
     // `queue: .main` runs the block on the main thread, and a main-thread post
-    // is even delivered synchronously, so the reconcile keeps the timing the
-    // accepted build had rather than deferring it a turn through a `Task`.
+    // is delivered synchronously.
     func start() {
         guard connectionObserver == nil else {
             return
         }
-
         connectionObserver = NotificationCenter.default.addObserver(
             forName: .GCControllerDidConnect,
             object: nil,
@@ -64,7 +45,6 @@ final class SwitchController {
                 self?.reconcileBinding()
             }
         }
-
         disconnectionObserver = NotificationCenter.default.addObserver(
             forName: .GCControllerDidDisconnect,
             object: nil,
@@ -74,30 +54,11 @@ final class SwitchController {
                 self?.reconcileBinding()
             }
         }
-
         reconcileBinding()
     }
 
-    /// Makes the binding match the controllers GameController currently reports:
-    /// release one whose controller has gone, then bind the first extended
-    /// gamepad if nothing is bound. Releasing is still decided by identity --
-    /// `boundController` is compared against the live array, not against
-    /// whatever a notification happened to carry -- so another controller
-    /// disconnecting leaves this binding alone. Binding stays first-come, as it
-    /// was when the initial scan was the only caller.
-    private func reconcileBinding() {
-        let connectedControllers = GCController.controllers()
-        if let boundController,
-           !connectedControllers.contains(where: { $0 === boundController }) {
-            unbind()
-        }
-        for controller in connectedControllers {
-            bind(controller)
-        }
-    }
-
-    /// Releases only this instance's observers and handlers and leaves the craft
-    /// at rest. Calling it when never started, or twice, does nothing further.
+    /// Removes this instance's observers and handlers. Safe to call twice or
+    /// without `start`.
     func stop() {
         if let connectionObserver {
             NotificationCenter.default.removeObserver(connectionObserver)
@@ -110,184 +71,94 @@ final class SwitchController {
         unbind()
     }
 
+    /// This frame's input, or nil when no controller is bound.
+    func currentInput() -> FlightInput? {
+        guard let gamepad = boundController?.extendedGamepad else {
+            return nil
+        }
+        // L or R climbs, ZL or ZR descends; both of a pair adds the boost.
+        let climbing = gamepad.leftShoulder.isPressed || gamepad.rightShoulder.isPressed
+        let descending = gamepad.leftTrigger.isPressed || gamepad.rightTrigger.isPressed
+        return FlightInput(
+            leftStick: Self.deadZoned(gamepad.leftThumbstick),
+            rightStick: Self.deadZoned(gamepad.rightThumbstick),
+            vertical: (climbing ? 1 : 0) - (descending ? 1 : 0),
+            // On the Switch Pro, `buttonX` rolls left and `buttonY` rolls right.
+            roll: (gamepad.buttonY.isPressed ? 1 : 0) - (gamepad.buttonX.isPressed ? 1 : 0),
+            // The bottom face button.
+            isBoosting: gamepad.buttonA.isPressed,
+            isVerticalBoosting:
+                (gamepad.leftShoulder.isPressed && gamepad.rightShoulder.isPressed) ||
+                (gamepad.leftTrigger.isPressed && gamepad.rightTrigger.isPressed)
+        )
+    }
+
+    /// Releases a binding whose controller has gone, then binds the first
+    /// extended gamepad if nothing is bound.
+    private func reconcileBinding() {
+        let connectedControllers = GCController.controllers()
+        if let boundController,
+           !connectedControllers.contains(where: { $0 === boundController }) {
+            unbind()
+        }
+        for controller in connectedControllers {
+            bind(controller)
+        }
+    }
+
+    // The handlers below run on the main thread: GCDevice.h says `handlerQueue`
+    // defaults to main, and this app never sets it. Each acts only on the
+    // press, so holding a button does nothing more.
     private func bind(_ controller: GCController) {
         guard boundController == nil, let gamepad = controller.extendedGamepad else {
             return
         }
         boundController = controller
-        bindingGeneration += 1
-        let binding = bindingGeneration
-
         print("Controller connected: vendor=\(controller.vendorName ?? "unknown"), category=\(controller.productCategory)")
 
-        gamepad.leftThumbstick.valueChangedHandler = { [weak self] _, xValue, yValue in
-            let filteredX = Self.deadZone(xValue)
-            let filteredY = Self.deadZone(yValue)
-            Task { @MainActor in
-                self?.flightState(forBinding: binding)?.leftStick = SIMD2(
-                    filteredX,
-                    filteredY
-                )
-            }
+        // `buttonMenu` is the physical +, and `buttonOptions` the - beside it.
+        gamepad.buttonMenu.pressedChangedHandler = { [weak self] _, _, pressed in
+            if pressed { self?.onJumpToRequested?() }
         }
-
-        gamepad.rightThumbstick.valueChangedHandler = { [weak self] _, xValue, yValue in
-            Task { @MainActor in
-                self?.flightState(forBinding: binding)?.rightStick = SIMD2(
-                    Self.deadZone(xValue),
-                    Self.deadZone(yValue)
-                )
-            }
-        }
-
-        gamepad.leftTrigger.pressedChangedHandler = { [weak self] _, _, pressed in
-            Task { @MainActor in
-                guard let self, binding == self.bindingGeneration else { return }
-                self.isLeftTriggerPressed = pressed
-                self.updateVerticalInput()
-            }
-        }
-        gamepad.rightTrigger.pressedChangedHandler = { [weak self] _, _, pressed in
-            Task { @MainActor in
-                guard let self, binding == self.bindingGeneration else { return }
-                self.isRightTriggerPressed = pressed
-                self.updateVerticalInput()
-            }
-        }
-        gamepad.leftShoulder.pressedChangedHandler = { [weak self] _, _, pressed in
-            Task { @MainActor in
-                guard let self, binding == self.bindingGeneration else { return }
-                self.isLeftShoulderPressed = pressed
-                self.updateVerticalInput()
-            }
-        }
-        gamepad.rightShoulder.pressedChangedHandler = { [weak self] _, _, pressed in
-            Task { @MainActor in
-                guard let self, binding == self.bindingGeneration else { return }
-                self.isRightShoulderPressed = pressed
-                self.updateVerticalInput()
-            }
-        }
-        gamepad.buttonA.pressedChangedHandler = { [weak self] _, _, pressed in
-            Task { @MainActor in self?.flightState(forBinding: binding)?.isBoosting = pressed }
-        }
-        // GameController face-button names are positional. The physically
-        // accepted Switch Pro roll pair reports through buttonX and buttonY.
-        gamepad.buttonX.pressedChangedHandler = { [weak self] _, _, pressed in
-            Task { @MainActor in self?.flightState(forBinding: binding)?.isRollingLeft = pressed }
-        }
-        gamepad.buttonY.pressedChangedHandler = { [weak self] _, _, pressed in
-            Task { @MainActor in self?.flightState(forBinding: binding)?.isRollingRight = pressed }
+        gamepad.buttonOptions?.pressedChangedHandler = { [weak self] _, _, pressed in
+            if pressed { self?.onHeadUpDisplayToggleRequested?() }
         }
         gamepad.rightThumbstickButton?.pressedChangedHandler = { [weak self] _, _, pressed in
-            guard pressed else {
-                return
-            }
-
-            Task { @MainActor in self?.flightState(forBinding: binding)?.resetView() }
+            if pressed { self?.onViewResetRequested?() }
         }
-        gamepad.buttonMenu.pressedChangedHandler = { [weak self] _, _, pressed in
-            guard pressed else {
-                return
-            }
-            Task { @MainActor in
-                guard let self, binding == self.bindingGeneration else { return }
-                self.onJumpToRequested?()
-            }
-        }
-        // On the Switch Pro Controller `buttonMenu` is the physical `+` and
-        // `buttonOptions` is the `-` beside it.
-        gamepad.buttonOptions?.pressedChangedHandler = { [weak self] _, _, pressed in
-            guard pressed else {
-                return
-            }
-            Task { @MainActor in
-                guard let self, binding == self.bindingGeneration else { return }
-                self.onHeadUpDisplayToggleRequested?()
-            }
-        }
-        // The D-pad's vertical axis is the wearer's own size: up doubles it and
-        // down halves it. Only the press-down transition steps it, so holding a
-        // direction does not run away. Left and right stay unbound.
         gamepad.dpad.up.pressedChangedHandler = { [weak self] _, _, pressed in
-            guard pressed else {
-                return
-            }
-            Task { @MainActor in
-                guard let self, binding == self.bindingGeneration else { return }
-                self.onGrowRequested?()
-            }
+            if pressed { self?.onGrowRequested?() }
         }
         gamepad.dpad.down.pressedChangedHandler = { [weak self] _, _, pressed in
-            guard pressed else {
-                return
-            }
-            Task { @MainActor in
-                guard let self, binding == self.bindingGeneration else { return }
-                self.onShrinkRequested?()
-            }
+            if pressed { self?.onShrinkRequested?() }
         }
-
-        print("Switch Pro Controller flight controls ready.")
     }
 
-    @MainActor
-    private func flightState(forBinding generation: Int) -> FlightState? {
-        generation == bindingGeneration ? flightState : nil
-    }
-
-    /// A disconnect leaves the craft wherever it was, pointing wherever it was,
-    /// but with nothing pressed and nothing decaying, so it stops rather than
-    /// coasting on the last inputs a vanished controller reported. Calling this
-    /// with nothing bound does nothing further.
     private func unbind() {
-        guard let controller = boundController else {
+        guard let gamepad = boundController?.extendedGamepad else {
+            boundController = nil
             return
         }
-
-        removeHandlers(from: controller)
-        boundController = nil
-        bindingGeneration += 1
-        isLeftShoulderPressed = false
-        isRightShoulderPressed = false
-        isLeftTriggerPressed = false
-        isRightTriggerPressed = false
-        flightState.neutraliseInput()
-
-        print("Controller disconnected. Flight controls neutralised.")
-    }
-
-    private func removeHandlers(from controller: GCController) {
-        guard let gamepad = controller.extendedGamepad else {
-            return
-        }
-
-        gamepad.leftThumbstick.valueChangedHandler = nil
-        gamepad.rightThumbstick.valueChangedHandler = nil
-        gamepad.leftTrigger.pressedChangedHandler = nil
-        gamepad.rightTrigger.pressedChangedHandler = nil
-        gamepad.leftShoulder.pressedChangedHandler = nil
-        gamepad.rightShoulder.pressedChangedHandler = nil
-        gamepad.buttonA.pressedChangedHandler = nil
-        gamepad.buttonX.pressedChangedHandler = nil
-        gamepad.buttonY.pressedChangedHandler = nil
-        gamepad.rightThumbstickButton?.pressedChangedHandler = nil
         gamepad.buttonMenu.pressedChangedHandler = nil
         gamepad.buttonOptions?.pressedChangedHandler = nil
+        gamepad.rightThumbstickButton?.pressedChangedHandler = nil
         gamepad.dpad.up.pressedChangedHandler = nil
         gamepad.dpad.down.pressedChangedHandler = nil
+        boundController = nil
+        print("Controller disconnected.")
     }
 
-    @MainActor
-    private func updateVerticalInput() {
-        flightState.isAscending = isLeftShoulderPressed || isRightShoulderPressed
-        flightState.isDescending = isLeftTriggerPressed || isRightTriggerPressed
-        flightState.isVerticalBoosting =
-            (isLeftShoulderPressed && isRightShoulderPressed) ||
-            (isLeftTriggerPressed && isRightTriggerPressed)
+    private static func deadZoned(_ stick: GCControllerDirectionPad) -> SIMD2<Float> {
+        SIMD2(deadZoned(stick.xAxis.value), deadZoned(stick.yAxis.value))
     }
 
-    private static func deadZone(_ value: Float) -> Float {
-        abs(value) < EarthflightTuning.controllerDeadZone ? 0 : value
+    /// Zero inside the dead zone, then rising from zero at its edge to one at
+    /// full travel.
+    private static func deadZoned(_ value: Float) -> Float {
+        let deadZone = EarthflightTuning.controllerDeadZone
+        guard abs(value) > deadZone else {
+            return 0
+        }
+        return (abs(value) - deadZone) / (1 - deadZone) * (value < 0 ? -1 : 1)
     }
 }

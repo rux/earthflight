@@ -5,24 +5,26 @@ import simd
 
 struct ImmersiveView: View {
     @State private var flightState = FlightState()
-    @State private var switchController: SwitchController?
+    @State private var switchController = SwitchController()
     @State private var headTracking = HeadTracking()
     @State private var jumpTo = JumpTo()
+    @State private var giantMode = GiantMode()
     @State private var attribution = ""
     @State private var sky: SkyDome?
     @State private var headUpDisplay: HeadUpDisplay?
-    @State private var giantMode = GiantMode()
-    // Owned here rather than by FlightState: FlightState's own closure below
-    // captures `state` (itself) strongly, so FlightState retaining this token
-    // would be a self-referential retain cycle that no session end could break.
+    // Held here rather than by anything the update closure captures, which
+    // would make a retain cycle that no session end could break.
     @State private var sceneUpdateSubscription: EventSubscription?
 
     var body: some View {
         RealityView { content, attachments in
             let state = flightState
-            let googleRenderer = GoogleTileRenderer(
-                renderLocalFromEcef: state.renderLocalFromEcef
-            )
+            let controller = switchController
+            let tracking = headTracking
+            let jump = jumpTo
+            let giant = giantMode
+            let renderer = GoogleTileRenderer(renderLocalFromEcef: state.renderLocalFromEcef)
+
             let sky = await SkyDome(ellipsoidHeightMeters: state.ellipsoidHeightMeters)
             self.sky = sky
             sky.update(
@@ -32,11 +34,13 @@ struct ImmersiveView: View {
                 ellipsoidHeightMeters: state.ellipsoidHeightMeters,
                 deltaTime: 0
             )
-            googleRenderer.earthRoot.addChild(sky.entity)
-            content.add(googleRenderer.earthRoot)
+            renderer.earthRoot.addChild(sky.entity)
+            content.add(renderer.earthRoot)
+
             if let jumpOverlayEntity = attachments.entity(for: "JumpToOverlay") {
-                // This attachment is a real immersive entity rather than a window overlay,
-                // so it remains visible over the full immersive RealityView.
+                // An attachment is an entity in the immersive scene. A window
+                // overlay does not present over a full immersive RealityView on
+                // hardware.
                 jumpOverlayEntity.position = [0, 1.5, -1.25]
                 jumpOverlayEntity.components.set(BillboardComponent())
                 content.add(jumpOverlayEntity)
@@ -45,51 +49,38 @@ struct ImmersiveView: View {
             let apiKey = Bundle.main.object(forInfoDictionaryKey: "GoogleMapsAPIKey") as? String ?? ""
             CesiumBridge.startTiles(
                 withAPIKey: apiKey,
-                maximumScreenSpaceError: EarthflightTuning.maximumScreenSpaceError,
-                maximumSimultaneousTileLoads: EarthflightTuning.maximumSimultaneousTileLoads,
-                maximumCachedBytes: EarthflightTuning.maximumCachedBytes,
-                lodTransitionsEnabled: EarthflightTuning.lodTransitionsEnabled,
-                lodTransitionLengthSeconds: EarthflightTuning.lodTransitionLengthSeconds,
-                forbidTileHoles: EarthflightTuning.forbidTileHoles,
-                onTilePreparationRequested: { tileIdentifier, primitives in
-                    googleRenderer.prepare(primitives: primitives, for: tileIdentifier)
+                settings: Self.tileSelectionSettings,
+                onPrepareTile: { tileIdentifier, primitives in
+                    renderer.prepare(tileIdentifier: tileIdentifier, primitives: primitives)
                 },
-                onTileVisible: { tileIdentifier in
-                    googleRenderer.show(tileIdentifier: tileIdentifier)
+                onTileSelected: { tileIdentifier in
+                    renderer.markSelected(tileIdentifier: tileIdentifier)
                 },
-                onRenderSetComplete: {
-                    googleRenderer.publishSelectedAndRetireOutgoing()
+                onSelectionComplete: {
+                    renderer.showSelection()
                 },
                 onTileFreed: { tileIdentifier in
-                    googleRenderer.remove(tileIdentifier: tileIdentifier)
+                    renderer.remove(tileIdentifier: tileIdentifier)
                 },
                 onAttributionChanged: { currentAttribution in
                     attribution = currentAttribution
                 }
             )
 
-            let tracking = headTracking
-            let jump = jumpTo
-            let giant = giantMode
-            // Compose the accepted render-local -> immersive-world launch placement
-            // with launch craft-local -> render-local so the craft pose remains fixed.
-            let initialWorldFromRenderLocal = FlightState.doubleMatrix(
-                googleRenderer.earthRoot.transform.matrix
-            )
+            // The craft's pose in the immersive world, fixed from launch: the
+            // first render-local -> world placement composed with craft ->
+            // render-local.
             let worldFromCraftAtLaunch =
-                initialWorldFromRenderLocal * state.renderLocalFromCraft
+                simd_double4x4(renderer.earthRoot.transform.matrix) * state.renderLocalFromCraft
 
-            // The craft's pose in the immersive world is fixed, so the display
-            // is placed once and never moved. It hangs off `content` rather
-            // than off `earthRoot`, which is the part that actually moves.
+            // The craft never moves in the world, so the display on it is placed
+            // once. It hangs off `content`, not off `earthRoot`, which moves.
             let headUpDisplay = HeadUpDisplay()
-            headUpDisplay.entity.transform = Transform(
-                matrix: FlightState.realityKitMatrix(worldFromCraftAtLaunch)
-            )
+            headUpDisplay.entity.transform = Transform(matrix: simd_float4x4(worldFromCraftAtLaunch))
             content.add(headUpDisplay.entity)
             self.headUpDisplay = headUpDisplay
 
-            let subscription = content.subscribe(to: SceneEvents.Update.self) { event in
+            sceneUpdateSubscription = content.subscribe(to: SceneEvents.Update.self) { event in
                 if let destination = jump.takePendingDestination() {
                     state.jump(
                         longitudeDegrees: destination.longitudeDegrees,
@@ -97,15 +88,11 @@ struct ImmersiveView: View {
                         groundEllipsoidHeightMeters: destination.groundEllipsoidHeightMeters,
                         heightAboveGroundMeters: EarthflightTuning.jumpHeightAboveGroundMeters
                     )
-                    googleRenderer.setRenderFrame(
-                        renderLocalFromEcef: state.renderLocalFromEcef
-                    )
+                    renderer.setRenderFrame(renderLocalFromEcef: state.renderLocalFromEcef)
                 } else if !jump.isActive {
-                    state.advance(deltaTime: event.deltaTime)
+                    state.advance(input: controller.currentInput(), deltaTime: event.deltaTime)
                     if state.rebaseIfNeeded() {
-                        googleRenderer.setRenderFrame(
-                            renderLocalFromEcef: state.renderLocalFromEcef
-                        )
+                        renderer.setRenderFrame(renderLocalFromEcef: state.renderLocalFromEcef)
                     }
                 }
                 sky.update(
@@ -119,66 +106,38 @@ struct ImmersiveView: View {
                     craftOrientation: state.orientation,
                     isJumpToActive: jump.isActive
                 )
-                // Outside the jump branch above, like the sky and the display:
-                // a size change already asked for should still arrive while a
-                // Jump To holds the craft still.
+                // Outside the jump branch, like the sky and the display, so a size
+                // change already asked for still arrives while Jump To holds the
+                // craft still.
                 giant.advance(deltaTime: event.deltaTime)
 
-                // render-local -> world = fixed world-from-launch-craft, giant
-                // mode's uniform scale about the craft origin, then
-                // inverse(current render-local-from-craft). Double is retained until
-                // assigning RealityKit's metre-scale Float Earth-root transform.
-                let worldFromRenderLocalDouble = FlightState.worldFromRenderLocal(
+                // Double until the last moment; RealityKit takes Float.
+                let worldFromRenderLocal = simd_float4x4(FlightState.worldFromRenderLocal(
                     worldFromCraftAtLaunch: worldFromCraftAtLaunch,
                     renderLocalFromCraft: state.renderLocalFromCraft,
                     worldScale: giant.worldScale
-                )
-                let worldFromRenderLocal = FlightState.realityKitMatrix(
-                    worldFromRenderLocalDouble
-                )
-                googleRenderer.earthRoot.transform = Transform(matrix: worldFromRenderLocal)
+                ))
+                renderer.earthRoot.transform = Transform(matrix: worldFromRenderLocal)
 
                 guard let worldFromHead = tracking.currentWorldFromHead() else {
                     return
                 }
-
-                // Derive Cesium's virtual camera from the exact rendered relationship.
-                // Head translation/orientation affects selection but is never written
-                // into FlightState or the Earth-root transform.
-                let renderLocalFromHead =
-                    worldFromRenderLocal.inverse * worldFromHead
+                // Cesium's camera is the wearer's actual head, carried back
+                // through exactly the transform just rendered. Head pose steers
+                // tile selection only; it never reaches the flight state or
+                // `earthRoot`.
                 let ecefFromHead = state.ecefFromRenderLocal *
-                    FlightState.doubleMatrix(renderLocalFromHead)
-                let ecefCameraPosition = SIMD3<Double>(
-                    ecefFromHead.columns.3.x,
-                    ecefFromHead.columns.3.y,
-                    ecefFromHead.columns.3.z
-                )
-                let ecefDirection4 = ecefFromHead * SIMD4<Double>(0, 0, -1, 0)
-                let ecefUp4 = ecefFromHead * SIMD4<Double>(0, 1, 0, 0)
-                let ecefCameraDirection = simd_normalize(
-                    SIMD3<Double>(ecefDirection4.x, ecefDirection4.y, ecefDirection4.z)
-                )
-                var ecefCameraUp = SIMD3<Double>(ecefUp4.x, ecefUp4.y, ecefUp4.z)
-                ecefCameraUp -= simd_dot(ecefCameraUp, ecefCameraDirection) *
-                    ecefCameraDirection
-                ecefCameraUp = simd_normalize(ecefCameraUp)
-
-                googleRenderer.beginUpdate()
+                    simd_double4x4(worldFromRenderLocal.inverse * worldFromHead)
+                renderer.beginSelection()
+                // The head looks down its own -Z with +Y up. The bridge
+                // normalises both, which also removes giant mode's scale.
                 CesiumBridge.updateTiles(
-                    withEcefCameraPositionX: ecefCameraPosition.x,
-                    positionY: ecefCameraPosition.y,
-                    positionZ: ecefCameraPosition.z,
-                    directionX: ecefCameraDirection.x,
-                    directionY: ecefCameraDirection.y,
-                    directionZ: ecefCameraDirection.z,
-                    upX: ecefCameraUp.x,
-                    upY: ecefCameraUp.y,
-                    upZ: ecefCameraUp.z,
+                    withCameraPosition: simd_make_double3(ecefFromHead.columns.3),
+                    direction: -simd_make_double3(ecefFromHead.columns.2),
+                    up: simd_make_double3(ecefFromHead.columns.1),
                     deltaTime: event.deltaTime
                 )
             }
-            sceneUpdateSubscription = subscription
         } attachments: {
             Attachment(id: "JumpToOverlay") {
                 VStack(spacing: 8) {
@@ -200,13 +159,12 @@ struct ImmersiveView: View {
         }
         .handlesGameControllerEvents(matching: .gamepad)
         .task {
-            let controller = SwitchController(flightState: flightState)
-            controller.onJumpToRequested = { jumpTo.start() }
-            controller.onHeadUpDisplayToggleRequested = { headUpDisplay?.toggle() }
-            controller.onGrowRequested = { giantMode.grow() }
-            controller.onShrinkRequested = { giantMode.shrink() }
-            switchController = controller
-            controller.start()
+            switchController.onJumpToRequested = { jumpTo.start() }
+            switchController.onHeadUpDisplayToggleRequested = { headUpDisplay?.toggle() }
+            switchController.onViewResetRequested = { flightState.resetView() }
+            switchController.onGrowRequested = { giantMode.grow() }
+            switchController.onShrinkRequested = { giantMode.shrink() }
+            switchController.start()
             await headTracking.start()
         }
         .onDisappear {
@@ -214,19 +172,30 @@ struct ImmersiveView: View {
         }
     }
 
-    /// Ends the session deterministically instead of leaving it to whatever ARC
-    /// teardown order the previous scene's entities and closures happen to get.
-    /// visionOS calls this when the immersive space closes, for example the
-    /// Digital Crown, and it must leave nothing that could still call into a
-    /// later session's renderer, controller or head tracking. Every step here
-    /// is independently idempotent, so a second call does nothing further.
+    private static var tileSelectionSettings: CesiumTileSelectionSettings {
+        CesiumTileSelectionSettings(
+            maximumScreenSpaceErrorHeadsetPixels: EarthflightTuning.maximumScreenSpaceErrorHeadsetPixels,
+            headsetPixelsPerDegree: EarthflightTuning.headsetPixelsPerDegree,
+            horizontalFieldOfViewDegrees: EarthflightTuning.tileSelectionHorizontalFieldOfViewDegrees,
+            verticalFieldOfViewDegrees: EarthflightTuning.tileSelectionVerticalFieldOfViewDegrees,
+            forbidHoles: EarthflightTuning.forbidTileHoles,
+            loadingDescendantLimit: EarthflightTuning.loadingDescendantLimit,
+            maximumSimultaneousTileLoads: EarthflightTuning.maximumSimultaneousTileLoads,
+            maximumCachedBytes: EarthflightTuning.maximumCachedBytes
+        )
+    }
+
+    /// Ends the session explicitly rather than leaving it to whatever order ARC
+    /// tears down the scene's entities and closures. visionOS calls this when the
+    /// immersive space closes, for example from the Digital Crown, and nothing
+    /// may be left that could call into a later session. Every step is safe to
+    /// repeat.
     private func endSession() {
         sceneUpdateSubscription = nil
-        switchController?.stop()
+        switchController.stop()
         headTracking.stop()
         jumpTo.cancel()
         sky?.stop()
-        flightState.neutraliseInput()
         CesiumBridge.stopTiles()
     }
 }

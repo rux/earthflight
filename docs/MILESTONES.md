@@ -17,6 +17,7 @@ see the shape of the thing quickly, not as work to redo.
 | 8 | Final feel and LOD transitions | The accepted controller feel and release decay, and an opaque readiness-gated tile handoff with no flashing |
 | 9 | Additions beyond the brief | An air-mass sky gradient, a star field, a head-up display, and the move to Swift 6 language mode |
 | 10 | Giant mode | The D-pad scales the wearer in doublings, so binocular depth reads at city distances rather than only up against a building |
+| 11 | Review and repair | Failed tiles no longer freeze streaming, straight flight follows great circles over the poles, each texture is held once, level of detail is tuned in headset pixels, and the controller is read once a frame |
 
 ## Where it stands
 

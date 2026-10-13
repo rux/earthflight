@@ -31,7 +31,7 @@ enum HeadUpDisplayCircleStyle {
 ///    1 degree at 1 km, 10 degrees at 100 km, 30 degrees at 1,000 km. Tracking
 ///    the true horizon would hold the bar off the ring at startup and, higher
 ///    up, draw a straight line tangent to a small round limb. Local horizontal
-///    is what an attitude indicator shows and what "level" means to the owner.
+///    is what an attitude indicator shows, and what "level" means here.
 ///
 /// The marks are placed far away and sized in angles rather than metres. The
 /// craft origin is a fixed world point but the wearer's head is not: at two
@@ -90,8 +90,8 @@ final class HeadUpDisplay {
     /// heading term at all.
     ///
     /// The projection cannot degenerate, because `advance` clamps pitch to
-    /// `maximumPitchFromHorizonDegrees`; at the accepted 80 degrees the
-    /// projected direction still has 17 per cent of its full length.
+    /// `maximumPitchFromHorizonDegrees`; at 80 degrees the projected direction
+    /// still has 17 per cent of its full length.
     nonisolated static func horizonOrientation(
         craftOrientation: simd_quatf
     ) -> simd_quatf {
@@ -106,8 +106,7 @@ final class HeadUpDisplay {
     }
 
     /// Half the angular width of the bar's gap. Derived from the ring so the gap
-    /// is always wide enough for whatever circle size the owner sets, whatever
-    /// margin they want either side of it.
+    /// always fits the circle, with the tuned margin either side of it.
     nonisolated static var horizonBarGapHalfAngleDegrees: Double {
         EarthflightTuning.headUpDisplayCircleDiameterDegrees / 2 +
             EarthflightTuning.headUpDisplayHorizonBarGapMarginDegrees
@@ -132,7 +131,7 @@ final class HeadUpDisplay {
         }
 
         // 3.75 degree facets, whose largest departure from a true circle is
-        // under a thousandth of the accepted stroke width.
+        // under a thousandth of the stroke width.
         let segmentCount = 96
         var positions: [SIMD3<Float>] = []
         var indices: [UInt32] = []

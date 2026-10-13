@@ -124,6 +124,7 @@ blocker — and state the blocker before changing course.
 | `EarthflightTuning.swift` | Every owner-editable constant |
 | `GoogleTileRenderer.swift` | Cesium's selected tiles as RealityKit entities: preparation, publication, retirement, render frame |
 | `CesiumBridge.h` / `.mm` | The Objective-C++ boundary: hosts the Cesium tileset and decodes glTF into flat primitive payloads |
+| `MatrixPrecision.swift` | Double/Float casts between the planetary maths and RealityKit |
 | `HeadTracking.swift` | Head pose relative to the craft |
 | `SkyDome.swift` | The air-mass sky gradient and its dome |
 | `StarField.swift` | Stars, faded in by air mass |

@@ -204,9 +204,7 @@ final class JumpTo {
     /// check inside the bridged block, so the callback trapped the app in
     /// `_dispatch_assert_queue_fail` -- "BUG IN CLIENT OF LIBDISPATCH:
     /// Assertion failed: Block was expected to execute on queue
-    /// [com.apple.main-thread]" -- the moment Jump To was pressed. Swift 5
-    /// language mode tolerated the same mismatch silently; nothing about the
-    /// callback changed, only whether the compiler enforces where it runs.
+    /// [com.apple.main-thread]" -- the moment Jump To was pressed.
     ///
     /// Resuming a continuation is safe from any thread, which is the point of
     /// one, so nothing here needs the main actor. Note that the recognition

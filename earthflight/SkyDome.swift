@@ -13,22 +13,20 @@ import simd
 // Every altitude effect comes from one scalar per direction: the air mass along
 // that ray, in sea-level vertical columns. There is no altitude term in the
 // palette and no separate "space mode". Looking up from the ground gives 1 and
-// the accepted blue. The ground horizon gives about 34 and the accepted pale
-// band, because a horizontal ray crosses far more air. Above the Karman line the
-// upward air mass is about 0.00001 and the palette renders it black, while rays
-// that graze the Earth still cross a long dense path and keep the thin bright
-// rim seen from orbit. The horizon moves down the sky as the Earth shrinks
-// without anything computing where it is: rays simply start reaching the ground.
+// blue. The ground horizon gives about 34 and a pale band, because a horizontal
+// ray crosses far more air. Above the Karman line the upward air mass is about
+// 0.00001 and the palette renders it black, while rays that graze the Earth
+// still cross a long dense path and keep the thin bright rim seen from orbit.
+// The horizon moves down the sky as the Earth shrinks without anything
+// computing where it is: rays simply start reaching the ground.
 //
 // The gradient's zenith axis (the sphere's local +Y, where the texture's V=0
-// row lands) has to track current geodetic up, not the render-local frame's
-// own Y axis. Those only coincide at the point that last set the render
-// origin (launch, jump or the last rebase); up to the 50 km rebase distance
-// away they differ by about 0.45 degrees, growing continuously and then
-// jumping back to zero at the next rebase. `SkyDome.update` corrects for this
-// by orienting the entity to `FlightState.renderLocalFromCraftTangent`, the
-// craft's current tangent frame expressed in render-local coordinates, which
-// depends only on the craft's position and not on its heading, pitch or roll.
+// row lands) has to track current geodetic up, not the render frame's own Y
+// axis. Those coincide only where the render origin was last set; 50 km away
+// they differ by about 0.45 degrees, then snap back at the next rebase.
+// `SkyDome.update` therefore orients the entity to
+// `FlightState.renderLocalFromCraftTangent`, which depends only on the craft's
+// position, not on its attitude.
 
 /// Geometry and density of the modelled atmosphere. These describe the world
 /// rather than taste, so they are not in `EarthflightTuning`.
@@ -151,15 +149,11 @@ nonisolated enum SkyAtmosphere {
     }
 
     /// Closed form of `ray(heightMeters:zenithAngleRadians: 0).relativeAirMass`.
-    /// A vertical ray's altitude increases linearly with distance travelled, so
-    /// the exponential-density integral from the eye to the atmosphere top has
-    /// an exact antiderivative and needs no march:
+    /// Along a vertical ray altitude grows linearly with distance, so the
+    /// exponential-density integral from the eye to the atmosphere top needs no
+    /// march:
     ///
     /// airMass = exp(-h/H) * (1 - exp(-(T-h)/H))
-    ///
-    /// Use this wherever only the straight-up air mass is wanted. It is not a
-    /// replacement for `ray`, which still handles every other angle, the
-    /// ground/space branch and all artistic tuning.
     static func zenithAirMass(heightMeters: Double) -> Double {
         let height = max(heightMeters, 1)
         guard height < atmosphereTopMeters else {
@@ -179,12 +173,10 @@ nonisolated enum SkyGradient {
     ///
     /// The palette is joined with a monotone cubic rather than straight lines.
     /// Straight lines change slope abruptly at every stop, and the eye turns a
-    /// slope discontinuity into a visible line: at ground level the stops at air
-    /// mass 3, 8 and 20 land at 71, 83 and 88 degrees from the zenith, and the
-    /// worst of them changed the slope of blue against angle by a factor of 8.6.
-    /// Those were the lines through the mid blues. A cubic removes the corner
-    /// without moving the stops, so every tuned colour still appears exactly
-    /// where it did.
+    /// slope discontinuity into a visible band: at ground level the worst stop
+    /// changed the slope of blue against angle by a factor of 8.6. A cubic
+    /// removes the corner without moving the stops, so every tuned colour still
+    /// appears exactly where it was tuned.
     static func scatteredColour(relativeAirMass: Double) -> SIMD3<Double> {
         let stops = EarthflightTuning.skyAirMassColourStops
         guard let upper = stops.firstIndex(where: { $0.airMass >= relativeAirMass }) else {
@@ -262,9 +254,8 @@ nonisolated enum SkyGradient {
         return ground + (scattered - ground) * haze
     }
 
-    /// Tightly packed RGBA8 rows, top row at the zenith. That row order is the
-    /// one the accepted linear-gradient sky used, so the dome keeps its
-    /// orientation without touching the mesh or the sampler.
+    /// Tightly packed RGBA8 rows, top row at the zenith, which is where the
+    /// generated sphere puts V = 0.
     static func pixels(heightMeters: Double, rowCount: Int) -> [UInt8] {
         var pixels = [UInt8](repeating: 255, count: textureWidth * rowCount * 4)
         let raysPerRow = raysPerRow(heightMeters: heightMeters)
@@ -293,11 +284,9 @@ nonisolated enum SkyGradient {
     }
 
     /// Rays averaged per row. One is enough while the atmosphere's bright limb is
-    /// wider than a texture row: the limb spans about 1.8 degrees from low orbit
-    /// and still 0.27 degrees from 10,000 km, against 0.088 degrees per row.
-    /// Beyond that it narrows past a single row and has to be averaged, or it
-    /// flickers between rows as the craft climbs. Below that height the extra
-    /// rays only cost time, and time there is what the update cadence spends.
+    /// wider than a texture row: about 1.8 degrees from low orbit and still 0.27
+    /// from 10,000 km, against 0.088 per row. Beyond that it narrows past a row
+    /// and has to be averaged, or it flickers between rows during a climb.
     static func raysPerRow(heightMeters: Double) -> Int {
         heightMeters > EarthflightTuning.skySupersampleHeightMeters
             ? EarthflightTuning.skyGradientRaysPerRow
@@ -324,10 +313,9 @@ nonisolated enum SkyGradient {
         UInt8(clamping: Int((scaledComponent + noise).rounded()))
     }
 
-    /// sRGB and no mipmaps. sRGB reproduces the accepted colours exactly, since
-    /// the previous sky was drawn as a device-RGB gradient. The dome is always
-    /// magnified — one row covers about a twentieth of a degree — so mipmaps
-    /// would only cost time and blur the thin limb.
+    /// sRGB, and no mipmaps: the dome is always magnified, one row covering
+    /// about a twentieth of a degree, so mipmaps would only cost time, blur the
+    /// thin limb and average the dither away.
     static func image(pixels: [UInt8], rowCount: Int) -> CGImage {
         let provider = CGDataProvider(data: Data(pixels) as CFData)!
         return CGImage(
@@ -370,7 +358,7 @@ final class SkyDome {
     private let starField: StarField
     private let texture: TextureResource
     private var builtHeightMeters: Double
-    private var isRebuilding = false
+    /// The gradient rebuild in flight, if any. At most one runs at a time.
     private var rebuildTask: Task<Void, Never>?
 
     init(ellipsoidHeightMeters: Double) async {
@@ -397,10 +385,9 @@ final class SkyDome {
     /// The sphere has to stay outside everything Cesium can draw. The farthest
     /// visible point of the Earth is the horizon tangent point, sqrt(d^2 - R^2)
     /// away, so half again that distance clears the globe from any altitude.
-    /// Near the ground that is small and the fixed accepted radius wins, which
-    /// leaves low flight geometrically identical to the accepted build; the
-    /// dome only starts growing at around 3,000 km, where the Earth has begun to
-    /// fit inside the view and would otherwise be hidden behind the sky.
+    /// Near the ground that is small and the fixed radius wins; the dome starts
+    /// growing at around 3,000 km, where the whole Earth begins to fit in view
+    /// and would otherwise be hidden behind the sky.
     nonisolated static func radiusMeters(ellipsoidHeightMeters: Double) -> Double {
         let earthRadius = SkyAtmosphere.earthRadiusMeters
         let eyeRadius = earthRadius + max(ellipsoidHeightMeters, 0)
@@ -419,8 +406,7 @@ final class SkyDome {
         return abs(ellipsoidHeightMeters - builtHeightMeters) > step
     }
 
-    // The mesh keeps the accepted fixed radius so low flight renders exactly the
-    // geometry that was accepted; scale is how the dome grows above it.
+    // The mesh keeps the fixed radius; scale is how the dome grows above it.
     private func applyRadius(ellipsoidHeightMeters: Double) {
         entity.scale = .init(repeating: Float(
             Self.radiusMeters(ellipsoidHeightMeters: ellipsoidHeightMeters) /
@@ -435,12 +421,12 @@ final class SkyDome {
         ellipsoidHeightMeters: Double,
         deltaTime: TimeInterval
     ) {
-        // The dome shares the Earth-root rotation but stays centred on the
-        // virtual craft in the current render frame. Its own orientation then
-        // points the gradient's zenith axis at current geodetic up rather than
-        // the render frame's fixed axes; see the type-level comment.
+        // The dome shares the Earth root's rotation but stays centred on the
+        // craft in the current render frame. Its own orientation then points
+        // the gradient's zenith at current geodetic up; see the comment at the
+        // top of this file.
         entity.position = renderLocalPosition
-        let orientation = FlightState.orientation(renderLocalFromCraftTangent)
+        let orientation = simd_quatf(rotationOf: renderLocalFromCraftTangent)
         entity.orientation = orientation
         applyRadius(ellipsoidHeightMeters: ellipsoidHeightMeters)
         starField.update(
@@ -451,58 +437,42 @@ final class SkyDome {
         )
 
         // One rebuild at a time. Under full vertical boost the height threshold
-        // alone would ask for a new gradient every frame or two, and the flag
-        // throttles that to whatever the device actually keeps up with without
-        // needing a timer.
-        guard !isRebuilding,
+        // alone would ask for a new gradient every frame or two; this throttles
+        // it to whatever the device keeps up with.
+        guard rebuildTask == nil,
               Self.needsRebuild(
                 builtHeightMeters: builtHeightMeters,
                 ellipsoidHeightMeters: ellipsoidHeightMeters
               ) else {
             return
         }
-        isRebuilding = true
         rebuildTask = Task {
+            defer { rebuildTask = nil }
             let rowCount = EarthflightTuning.skyGradientRowCount
-            // Marching 2,048 rays is milliseconds of pure arithmetic and depends
-            // on nothing but the height, so keep it off the render actor.
+            // Milliseconds of pure arithmetic, so off the render actor.
             let pixels = await Task.detached(priority: .userInitiated) {
                 SkyGradient.pixels(heightMeters: ellipsoidHeightMeters, rowCount: rowCount)
             }.value
-            // A session end cancels this task before it touches the texture, so
-            // a later session's dome never receives a stale-height GPU upload.
-            guard !Task.isCancelled else {
-                isRebuilding = false
-                return
-            }
+            // A session that has ended must not receive a late upload.
+            guard !Task.isCancelled else { return }
             do {
                 try await texture.replace(
                     using: SkyGradient.image(pixels: pixels, rowCount: rowCount),
                     options: SkyGradient.textureCreateOptions
                 )
             } catch {
-                // The old texture is still installed and still correct for
-                // builtHeightMeters, which is untouched below. A later frame's
-                // needsRebuild check will simply try again from the current height.
+                // The old texture is still installed and still right for
+                // `builtHeightMeters`, so a later frame simply tries again.
                 print("SkyDome: gradient upload failed at \(ellipsoidHeightMeters) m: \(error)")
-                isRebuilding = false
                 return
             }
-            // The session may have ended while the upload itself was in flight;
-            // do not publish bookkeeping for a texture a later session's dome
-            // never asked for.
-            guard !Task.isCancelled else {
-                isRebuilding = false
-                return
-            }
+            guard !Task.isCancelled else { return }
             builtHeightMeters = ellipsoidHeightMeters
-            isRebuilding = false
         }
     }
 
-    /// Cancels any in-flight gradient rebuild. Safe to call when idle or twice.
+    /// Cancels any rebuild in flight. Safe to call when idle or twice.
     func stop() {
         rebuildTask?.cancel()
-        rebuildTask = nil
     }
 }

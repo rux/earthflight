@@ -35,7 +35,7 @@ imported nonisolated.
 | `SFSpeechRecognizer.requestAuthorization` handler | header gives no main-queue guarantee, and it really does arrive elsewhere | `JumpTo.speechAuthorizationStatus` is `nonisolated` |
 | `recognitionTask(with:resultHandler:)` handler | `SFSpeechRecognizer.queue` defaults to main and is never set | inferred main-actor |
 | `AVAudioNode.installAudioTap` tap block | declared `@Sendable`; runs on the audio thread | nonisolated, no check |
-| GameController element handlers | `handlerQueue` defaults to main and is never set | inferred main-actor |
+| GameController one-shot button handlers (`+`, `-`, stick click, D-pad) | `handlerQueue` defaults to main and is never set | inferred main-actor, acting directly |
 | `GCControllerDidConnect` / `DidDisconnect` observers | registered `queue: .main` | `MainActor.assumeIsolated`, a *checked* assertion |
 | The five `CesiumBridge` callbacks | main queue: two via `dispatch_async`, three synchronously from `updateTiles` | `NS_SWIFT_UI_ACTOR` on the block parameters |
 | `MaterialParameters.Texture.Sampler.modify` | synchronous on the caller | inferred main-actor |
@@ -128,6 +128,11 @@ Do not start by suspecting Google's geometry, skirts or imagery, or Cesium's LOD
   vertex payload.
 * Keep the asynchronous tile-generation guard: a tile removed while its RealityKit
   resources are being prepared must not be installed afterwards.
+* Once the payloads hold their copy, `releaseDecodedImages` drops Cesium's decoded
+  texels, so a cached tile's texture is not held twice. It sets
+  `ImageAsset::sizeBytes` first, which is Cesium's documented way to keep cache
+  accounting unchanged, and it skips any image owned by a shared-asset depot,
+  which other tiles may be using.
 
 ### Tile textures
 
@@ -154,16 +159,19 @@ flat; broad low-detail horizon coverage is expected and correct.
 
 * Show only `tilesToRenderThisFrame`. Loaded or cached content is not
   automatically visible content.
-* **Two view states go to Cesium at the same centre eye**: a 90-by-70-degree,
-  1024-by-1024 detail view, and a 120-by-110-degree, 1-by-1 coverage view. Cesium
-  culls against their union but takes the largest screen-space error, so the first
-  keeps refinement pressure while the second covers the Vision Pro's periphery.
-  The single 90-by-70 frustum left real gaps out at the edges. **Never set the
-  coverage viewport to zero height** — cesium-native 0.64 treats that as a reason
-  to bypass fog culling.
-* Do not tune screen-space error, preload behaviour, cache limits or load
-  concurrency because the visible area looks broad. Change them only for measured
-  frame time, memory pressure or a visible defect on the headset.
+* **One view state goes to Cesium, at the centre eye**: 120 by 110 degrees, from
+  `EarthflightTuning`. A 90-by-70 frustum alone left real gaps out at the edges.
+  Its viewport height is derived from `headsetPixelsPerDegree`, so that Cesium's
+  pixels are headset pixels and `maximumScreenSpaceErrorHeadsetPixels` means what
+  it says. Cesium takes the largest screen-space error over all views whether or
+  not a tile is visible in them, so the earlier pair — a 90-by-70, 1024-by-1024
+  detail view plus a 120-by-110, 1-by-1 coverage view — selected exactly what one
+  view does at 42.5 headset pixels. That old viewport put about 13 Cesium pixels
+  in a degree against the headset's 34. **Never give Cesium a zero-height
+  viewport** — cesium-native 0.64 treats that as a reason to bypass fog culling.
+* Screen-space error, the selection cone, the descendant limit, the cache and
+  load concurrency are the owner's to tune, by eye on the headset. Do not change
+  them because the visible area looks broad.
 * Do not classify tiles by distance or add a second LOD system.
 * `maximumSimultaneousTileLoads` limits concurrent loading, not how many tiles are
   visible or cached. The Cesium cache it feeds is transient and in memory; there is
@@ -175,9 +183,15 @@ flat; broad low-detail horizon coverage is expected and correct.
   through Cesium's asynchronous `prepareInLoadThread` future **before**
   `prepareInMainThread` makes a tile selectable. Partial or zero construction
   resolves as failure, never as covering geometry.
-* `GoogleTileRenderer.publishSelectedAndRetireOutgoing` then enables the complete
-  selected set and disables its predecessors as one uninterrupted main-actor scene
-  change, with no `await` between visibility changes and no overlap timer.
+* `GoogleTileRenderer.showSelection` then enables the complete selected set and
+  disables its predecessors as one uninterrupted main-actor scene change, with no
+  `await` between visibility changes and no overlap timer.
+* **A `Failed` tile in the selection is skipped, not waited for.** Cesium selects
+  a failed tile as if it were empty and never retries it while it stays selected,
+  and any HTTP error or dropped connection fails a tile permanently. Counting it
+  as "not ready" froze every update for as long as it stayed in view: after a fast
+  turn, detail stopped arriving until the owner flew elsewhere. Skipping it costs
+  a hole in that one tile until Cesium evicts it and loads it again.
 * **`OpacityComponent` crossfade was rejected**: overlapping photogrammetry
   exposed the sky and the geometry behind tall structures through the fade.
 * Retirement is derived from the difference between what the renderer is drawing
@@ -193,8 +207,9 @@ flat; broad low-detail horizon coverage is expected and correct.
 * `Tileset::updateViewGroup` permanently forces `enableFrustumCulling` and
   `enableFogCulling` to false whenever `enableLodTransitionPeriod` is true, which
   floods selection with tiles from right around the globe — about 90 tiles becomes
-  about 215. Since the renderer no longer reads `tilesFadingOut`, the transition
-  period buys nothing, so `lodTransitionsEnabled` is `false`.
+  about 215. The renderer does not read `tilesFadingOut`, so the transition period
+  buys nothing; the bridge leaves it at Cesium's default, off, and there is no
+  tuning constant for it.
 * `TilesetOptions::forbidHoles` does not do what its doc comment promises. All
   three uses are in the culled branch of `visitTileIfNeeded`; it only makes culled
   tiles load and report upward. Do not re-trust that comment.
@@ -208,7 +223,19 @@ flat; broad low-detail horizon coverage is expected and correct.
 * **Never key renderer state on the `Tile` pointer.** Cesium destroys and
   reallocates `Tile` objects constantly while flying into new ground, so a recycled
   address would alias two live tiles. Identifiers are an atomic monotonic counter
-  allocated during load-thread preparation.
+  allocated during load-thread preparation, starting at 1. The identifier is the
+  only per-tile render resource, so Cesium's opaque render-resources pointer
+  carries it directly; nothing is allocated or freed.
+* **One `AsyncSystem` for the life of the process, pumped every frame.** A
+  destroyed tileset finishes its in-flight loads later through that system's
+  main-thread queue; with a task system per session nothing ever pumped it again
+  and the old content manager leaked. Each session has a number, and work from an
+  earlier session's tileset is answered with failure rather than reaching the
+  current renderer.
+* **Fog culling does not touch visible ground.** Cesium culls only when
+  `exp(-(distance * density)²)` underflows to exactly zero, which with the default
+  table is about 170 km from 1,000 m up, beyond the 113 km horizon. It is not why
+  distant detail looks coarse; screen-space error is.
 * A tile referenced by an `IntrusivePointer` counts as content-referenced and
   cannot be unloaded, so holding `Tile::ConstPointer` is a valid way to keep
   content alive while it is still drawn.
@@ -261,6 +288,13 @@ ancestor shell to hide it.
   EGM96 grid gives `N`; the ellipsoid height is `H + N`.
 * Horizontal integration steps along the local tangent frame and then reconstructs
   ECEF at the intended ellipsoid height, so chord-shortening cannot add altitude.
+* **Heading is carried along each move, not held as a compass bearing.** The step
+  and the craft's level forward direction travel as ECEF vectors and are laid back
+  onto each new tangent plane: parallel transport, so a craft held straight flies a
+  great circle. A held bearing spirals into the poles, and flying due north — the
+  launch attitude — reached the pole and bounced across it with the world turning
+  180 degrees every frame. Heading, pitch and roll are `Double` because at low
+  speed the per-frame transport is smaller than a `Float` can represent.
 * **The integration step limit is angular, not a flat distance.** A flat 10 km step
   is fine at the surface but the movement itself grows with altitude, so the two
   multiply: ten seconds of pitched climb once reached 899,106 Cesium conversions in
@@ -297,9 +331,18 @@ The feel is accepted. These are the shapes that produce it.
 * Right-stick click is a hard orientation reset to the launch heading, pitch and
   roll. It preserves geographic position and movement input, and clears the
   steering tail; a reset that immediately turned back off level would be wrong.
-* Both sticks share one `StickReleaseDecay` value, so its rules are stated once.
-  Movement and steering have their own durations in the tuning file, steering's
-  being the shorter. What coasts when steering is released is the **turn rate**, so
+* The sticks and held buttons are **read once a frame** by
+  `SwitchController.currentInput` and reach `FlightState.advance` as a
+  `FlightInput` value. `nil` means no controller, and drops every fade: a
+  controller that has gone can no longer report a release. Only the one-shot
+  buttons use handlers. Handlers that deferred their writes through a `Task`
+  needed a binding-generation counter to stop a stale write landing after a
+  disconnect; polling cannot produce one.
+* The dead zone is rescaled, so response rises from zero at its edge rather than
+  jumping to 12 per cent.
+* Both sticks and the vertical buttons share one `ReleaseDecay` type, so its rules
+  are stated once; the buttons use it as a one-axis input. Movement and steering
+  have their own durations in the tuning file, steering's being the shorter. What coasts when steering is released is the **turn rate**, so
   the craft eases out of a turn rather than stopping dead. Setting a duration to
   zero disables the effect and bypasses its state entirely. Any new deliberate
   input cancels a decay.
@@ -344,8 +387,8 @@ palette.
   proves the far plane is at least 9,000 km, not that it is unbounded. If the globe
   or sky clips at extreme altitude, suspect the far plane, not the gradient.
 * **The frame is the rebuild throttle, not the height threshold.** At most one
-  rebuild starts per scene update, because `update` runs once a frame and
-  `isRebuilding` blocks a second. The 25 m threshold only stops pointless work
+  rebuild starts per scene update, because `update` runs once a frame and a
+  rebuild still in flight blocks a second. The 25 m threshold only stops pointless work
   while hovering; it was 500 m once, and climbing 500 m from 1,000 m moved some
   texels by 63 of the 255 available levels, which the owner saw as the sky
   stepping. That cadence is affordable because `SkyGradient.raysPerRow` is one per
@@ -405,7 +448,8 @@ altitude-driven scale.
   Below a threshold the whole field is disabled so a thousand transparent quads
   stay out of ordinary low flight.
 * **Twinkling is done in banks, not per star.** The stars are split across a few
-  meshes whose material opacity breathes on different periods. Animating a thousand
+  meshes, each with an `OpacityComponent` that breathes on its own period over a
+  shared material. Animating a thousand
   points individually needs a shader, and visionOS has no `CustomMaterial`. Every
   star in a bank breathes together, so the base brightness is deliberately high — a
   deeper swing reads as banks rather than as twinkling. Real stars do not twinkle in
@@ -485,7 +529,7 @@ the camera or Cesium changes; the whole of it is one uniform scale on
   `d` and size `L` is drawn at `d/s` and `L/s`, and `s` cancels: the angular
   picture from the craft origin is identical and the screen-space error Cesium
   computed still predicts on-screen pixels exactly. Do not scale
-  `maximumScreenSpaceError`, the viewport dimensions or the geometric error to
+  `maximumScreenSpaceErrorHeadsetPixels`, the viewport or the geometric error to
   "compensate". What changes is only what is measured *across* the origin: each
   eye's 31.5 mm offset, and head parallax. That is the entire effect.
 * The head's offset from the craft reaches Cesium multiplied by the size, because

@@ -29,13 +29,17 @@ struct EarthflightLocalFrame {
     }
 }
 
-/// A linear fade after a two-axis control is released: the live input while it
-/// is held, then a ramp from the strongest deliberate sample down to zero. Any
-/// new input cancels a fade in progress. A duration of zero disables it.
+/// A linear fade after a two-axis control is let go, on each axis separately.
+/// The output follows the control unless the control falls faster than the
+/// fade allows; then the output falls in a straight line from where it was to
+/// zero over `durationSeconds`. So letting go coasts, while easing back slowly
+/// just follows the hand. A duration of zero disables it.
 private struct ReleaseDecay {
-    private var strongestActiveInput = SIMD2<Float>.zero
-    private var wasActive = false
-    private var remainingSeconds: Float = 0
+    /// What each axis output last frame.
+    private var output = SIMD2<Float>.zero
+    /// How fast each axis may fall, in control units per second: set while
+    /// following, so that a fade from there takes the whole duration.
+    private var fallRate = SIMD2<Float>.zero
 
     mutating func adjusted(
         input: SIMD2<Float>,
@@ -45,33 +49,20 @@ private struct ReleaseDecay {
         guard durationSeconds > 0 else {
             return input
         }
-        if input != .zero {
-            if !wasActive {
-                strongestActiveInput = input
+        for axis in 0..<2 {
+            let fading = max(0, abs(output[axis]) - fallRate[axis] * deltaTime)
+            if abs(input[axis]) >= fading {
+                output[axis] = input[axis]
+                fallRate[axis] = abs(input[axis]) / durationSeconds
             } else {
-                // A released Switch Pro stick rebounds past centre, as far as
-                // +0.62 after a -1.0 strafe. Keeping the strongest sample on each
-                // axis stops that rebound arming a fade in the wrong direction.
-                if abs(input.x) >= abs(strongestActiveInput.x) {
-                    strongestActiveInput.x = input.x
-                }
-                if abs(input.y) >= abs(strongestActiveInput.y) {
-                    strongestActiveInput.y = input.y
-                }
+                // A let-go Switch Pro stick rebounds past centre, as far as +0.62
+                // after a -1.0 strafe. A rebound weaker than the fade so far is
+                // ignored like any other smaller input, so it can neither kick
+                // the craft the wrong way nor cut the fade short.
+                output[axis] = output[axis] < 0 ? -fading : fading
             }
-            wasActive = true
-            remainingSeconds = 0
-            return input
         }
-        if wasActive {
-            wasActive = false
-            remainingSeconds = durationSeconds
-        }
-        guard remainingSeconds > 0 else {
-            return .zero
-        }
-        remainingSeconds = max(0, remainingSeconds - deltaTime)
-        return strongestActiveInput * (remainingSeconds / durationSeconds)
+        return output
     }
 }
 

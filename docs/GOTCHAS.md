@@ -342,13 +342,20 @@ The feel is accepted. These are the shapes that produce it.
   jumping to 12 per cent.
 * Both sticks and the vertical buttons share one `ReleaseDecay` type, so its rules
   are stated once; the buttons use it as a one-axis input. Movement and steering
-  have their own durations in the tuning file, steering's being the shorter. What coasts when steering is released is the **turn rate**, so
-  the craft eases out of a turn rather than stopping dead. Setting a duration to
-  zero disables the effect and bypasses its state entirely. Any new deliberate
-  input cancels a decay.
-* Per-axis release state keeps the strongest deliberate sample, because the Switch
-  Pro stick's opposite-direction recentre rebound would otherwise reverse a
-  same-direction release tail.
+  have their own durations in the tuning file, steering's being the shorter. What
+  coasts when steering is released is the **turn rate**, so the craft eases out
+  of a turn rather than stopping dead. Setting a duration to zero disables the
+  effect and bypasses its state entirely.
+* **The fade starts from where the stick was, not from the strongest point of the
+  gesture.** Each axis follows the stick unless the stick falls faster than the
+  fade allows, and only then fades, in a straight line from its last value. A
+  let-go stick therefore coasts exactly as before, while a stick eased back by
+  hand just follows the hand. Fading from the strongest sample instead made a
+  slow release kick back to nearly full turn rate as it reached centre — a bump
+  of a few degrees — and it let the spring rebound through for a frame.
+* The Switch Pro stick rebounds past centre when let go, as far as +0.62 after a
+  -1.0 strafe. A rebound weaker than the fade so far is ignored like any other
+  smaller input, so it cannot reverse the fade.
 * Button roll is deliberately unaffected by release decay.
 
 ---

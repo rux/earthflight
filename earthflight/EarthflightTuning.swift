@@ -19,10 +19,28 @@ nonisolated enum EarthflightTuning {
     // Stops right-stick pitch reaching vertical and flipping the craft over.
     static let maximumPitchFromHorizonDegrees: Float = 80
 
-    // Speed scales with height above a reference ground level, which is set
-    // this far below the craft at launch. It is not terrain height: altitude is
-    // WGS84 ellipsoid height throughout.
+    // Speed scales with height above the ground straight below the craft,
+    // measured against the tiles already loaded. Until the first measurement
+    // the ground is taken to be this far below the launch point.
     static let initialSpeedReferenceHeightMeters: Double = 70
+
+    // Seconds between measurements of the ground below. Full stick covers
+    // about 1.8 heights a second, 7 with boost, so a reading can be that many
+    // heights stale; flying fast and low at rising ground is where a longer
+    // interval would show.
+    static let groundMeasurementIntervalSeconds: Double = 1
+
+    // Time constant, in seconds, for the speed curve's ground to follow a new
+    // measurement: 63 per cent of the way in one, 95 in three. It turns a tower
+    // or a cliff edge passing underneath into a gradual change of speed rather
+    // than a jolt. Zero follows at once.
+    static let groundReferenceFollowSeconds: Double = 0.5
+
+    // A measurement counts only when its tile's geometric error is below this
+    // fraction of the craft's height above the hit. Tiles left under a flying
+    // craft are typically a few per cent; just after a jump the only ones there
+    // can be continent-sized and kilometres out.
+    static let maximumGroundTileErrorFractionOfHeight: Double = 0.25
 
     // Forward and strafe speed: minimum + factor * height, all times the
     // multiplier, which scales the whole curve without changing its shape.
@@ -152,6 +170,17 @@ nonisolated enum EarthflightTuning {
     static let headUpDisplayHorizonBarThicknessDegrees = 0.15
     static let headUpDisplayHorizonBarArmLengthDegrees = 5.0
     static let headUpDisplayHorizonBarGapMarginDegrees = 0.5
+
+    // The altimeter, which `-` shows on its second press: height above the
+    // measured ground, in metres or, from 10 km, kilometres. It sits above the
+    // outer end of the right arm, with this gap between them. The text height
+    // is the font's em; digits stand about seven tenths of it.
+    static let headUpDisplayAltimeterTextHeightDegrees = 0.35
+    static let headUpDisplayAltimeterGapDegrees = 0.15
+
+    // Seconds between readings. Rebuilding the text mesh every frame would
+    // spend main-thread time on digits changing too fast to read.
+    static let headUpDisplayAltimeterRefreshSeconds = 0.25
 
     // MARK: - Sky
 

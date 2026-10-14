@@ -10,6 +10,13 @@ enum HeadUpDisplayCircleStyle {
     case filledDisc
 }
 
+/// What the `-` button steps through, in this order, starting with the marks.
+enum HeadUpDisplayMode {
+    case marks
+    case marksAndAltimeter
+    case hidden
+}
+
 /// Two marks that say where the craft is pointed and where level is: a ring on
 /// the nose axis, and a bar lying in the local horizontal plane with a gap the
 /// ring sits in. At launch the ring sits exactly in that gap. Pitch the nose
@@ -39,6 +46,10 @@ enum HeadUpDisplayCircleStyle {
 /// axis it exists to report. At a kilometre the same lean is 0.03 degrees and
 /// the marks are effectively collimated, as a real head-up display is. They
 /// also ignore depth, so terrain never buries them.
+///
+/// The altimeter is a third, optional mark: a small reading of the height above
+/// the measured ground, parented to the bar so it rides on the end of its right
+/// arm through pitch and roll.
 @MainActor
 final class HeadUpDisplay {
     /// Parent of both marks, placed once at the craft's fixed pose in the
@@ -46,7 +57,14 @@ final class HeadUpDisplay {
     let entity = Entity()
 
     private let horizonBar: ModelEntity
-    private var isShownByOwner = true
+    /// Placed at the outer end of the right arm, turned to face the craft.
+    private let altimeter = Entity()
+    /// Offset within `altimeter` so the text's right edge meets the arm's end.
+    private let altimeterText = ModelEntity()
+    private let altimeterMaterial: UnlitMaterial
+    private var mode = HeadUpDisplayMode.marks
+    private var secondsUntilAltimeterRefresh = 0.0
+    private var shownAltimeterReading = ""
 
     init() {
         let distance = EarthflightTuning.headUpDisplayDistanceMeters
@@ -60,20 +78,50 @@ final class HeadUpDisplay {
             mesh: Self.horizonBarMesh(distanceMeters: distance),
             materials: [material]
         )
+        // The text is a closed extruded solid. With no depth test its back face
+        // would blend over its front and double the opacity, so cull it.
+        var textMaterial = material
+        textMaterial.faceCulling = .back
+        altimeterMaterial = textMaterial
+
         entity.addChild(circle)
         entity.addChild(horizonBar)
+
+        // A point on the same horizontal arc as the arm, so it stays on the
+        // horizon. Rotating local +Z by minus the arc angle points it back at
+        // the craft, which is the way the text's front face looks.
+        let armEndAngle = Float(
+            (Self.horizonBarGapHalfAngleDegrees + EarthflightTuning.headUpDisplayHorizonBarArmLengthDegrees) *
+                .pi / 180
+        )
+        altimeter.position = [distance * sin(armEndAngle), 0, -distance * cos(armEndAngle)]
+        altimeter.orientation = simd_quatf(angle: -armEndAngle, axis: [0, 1, 0])
+        altimeter.isEnabled = false
+        altimeter.addChild(altimeterText)
+        horizonBar.addChild(altimeter)
     }
 
     /// The physical `-` button, alongside the `+` that starts a Jump To.
-    func toggle() {
-        isShownByOwner.toggle()
+    func cycleMode() {
+        mode = switch mode {
+        case .marks: .marksAndAltimeter
+        case .marksAndAltimeter: .hidden
+        case .hidden: .marks
+        }
+        // So the altimeter reads the moment it appears, not a refresh later.
+        secondsUntilAltimeterRefresh = 0
     }
 
     /// The Jump To card is billboarded at the same azimuth a metre and a quarter
     /// ahead, and the marks ignore depth, so they would otherwise be drawn over
     /// its text. Hiding them while it is up is simpler than sorting them.
-    func update(craftOrientation: simd_quatf, isJumpToActive: Bool) {
-        entity.isEnabled = isShownByOwner && !isJumpToActive
+    func update(
+        craftOrientation: simd_quatf,
+        heightAboveGroundMeters: Double,
+        isJumpToActive: Bool,
+        deltaTime: TimeInterval
+    ) {
+        entity.isEnabled = mode != .hidden && !isJumpToActive
         guard entity.isEnabled else {
             return
         }
@@ -81,6 +129,55 @@ final class HeadUpDisplay {
         horizonBar.orientation = Self.horizonOrientation(
             craftOrientation: craftOrientation
         )
+
+        altimeter.isEnabled = mode == .marksAndAltimeter
+        guard altimeter.isEnabled else {
+            return
+        }
+        secondsUntilAltimeterRefresh -= deltaTime
+        guard secondsUntilAltimeterRefresh <= 0 else {
+            return
+        }
+        secondsUntilAltimeterRefresh = EarthflightTuning.headUpDisplayAltimeterRefreshSeconds
+        let reading = Self.altimeterReading(heightAboveGroundMeters: heightAboveGroundMeters)
+        if reading != shownAltimeterReading {
+            shownAltimeterReading = reading
+            showAltimeterReading(reading)
+        }
+    }
+
+    /// Whole metres, or whole kilometres from 10 km, where metres would be
+    /// more digits than anyone reads.
+    nonisolated static func altimeterReading(heightAboveGroundMeters: Double) -> String {
+        abs(heightAboveGroundMeters) < 10_000
+            ? "\(Int(heightAboveGroundMeters.rounded())) m"
+            : "\(Int((heightAboveGroundMeters / 1_000).rounded())) km"
+    }
+
+    /// Rebuilds the text mesh, then sets its right edge on the arm's end and
+    /// its lowest glyph the tuned gap above the arm's top edge.
+    private func showAltimeterReading(_ reading: String) {
+        let distance = EarthflightTuning.headUpDisplayDistanceMeters
+        // RealityKit takes a text mesh's font size in metres.
+        let fontSize = Self.radius(
+            distanceMeters: distance,
+            angleDegrees: EarthflightTuning.headUpDisplayAltimeterTextHeightDegrees
+        )
+        let mesh = MeshResource.generateText(
+            reading,
+            extrusionDepth: fontSize / 100,
+            font: .monospacedDigitSystemFont(ofSize: CGFloat(fontSize), weight: .regular)
+        )
+        altimeterText.model = ModelComponent(mesh: mesh, materials: [altimeterMaterial])
+        let armTop = Self.radius(
+            distanceMeters: distance,
+            angleDegrees: EarthflightTuning.headUpDisplayHorizonBarThicknessDegrees / 2
+        )
+        let gap = Self.radius(
+            distanceMeters: distance,
+            angleDegrees: EarthflightTuning.headUpDisplayAltimeterGapDegrees
+        )
+        altimeterText.position = [-mesh.bounds.max.x, armTop + gap - mesh.bounds.min.y, 0]
     }
 
     /// Orientation of the horizon bar within the craft's frame, given the

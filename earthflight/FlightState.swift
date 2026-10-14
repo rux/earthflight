@@ -102,8 +102,13 @@ final class FlightState {
     private(set) var ecefFromRenderLocal: simd_double4x4
     private(set) var renderLocalFromEcef: simd_double4x4
 
-    /// Ground level for the speed curve. Set at launch and by each jump, and
-    /// not followed while flying away from there.
+    /// The latest ground level below the craft: from the tiles under it, from
+    /// Jump To's elevation, or at launch a fixed height below it.
+    private(set) var measuredGroundEllipsoidHeightMeters: Double
+
+    /// Ground level for the speed curve. It follows the measured ground over
+    /// `groundReferenceFollowSeconds` rather than stepping to it, so a change
+    /// of ground underneath changes speed gradually.
     private var speedReferenceGroundEllipsoidHeightMeters: Double
 
     /// Craft-local -> local-horizontal attitude, rebuilt from the three angles.
@@ -158,8 +163,9 @@ final class FlightState {
         self.longitudeDegrees = cartographic.x
         self.latitudeDegrees = cartographic.y
         self.ellipsoidHeightMeters = cartographic.z
-        speedReferenceGroundEllipsoidHeightMeters =
+        measuredGroundEllipsoidHeightMeters =
             cartographic.z - EarthflightTuning.initialSpeedReferenceHeightMeters
+        speedReferenceGroundEllipsoidHeightMeters = measuredGroundEllipsoidHeightMeters
     }
 
     static func ecefPosition(
@@ -186,6 +192,11 @@ final class FlightState {
 
     var speedReferenceHeightMeters: Double {
         max(0, ellipsoidHeightMeters - speedReferenceGroundEllipsoidHeightMeters)
+    }
+
+    /// Negative when the craft has sunk below the last ground it measured.
+    var heightAboveMeasuredGroundMeters: Double {
+        ellipsoidHeightMeters - measuredGroundEllipsoidHeightMeters
     }
 
     var originDistanceMeters: Double {
@@ -242,10 +253,28 @@ final class FlightState {
         let frame = EarthflightLocalFrame(originEcef: craftEcefPosition)
         ecefFromRenderLocal = frame.ecefFromLocal
         renderLocalFromEcef = frame.localFromEcef
+        // Both at once: the jump's own elevation is better than anything the
+        // speed curve was following at the old place.
+        measuredGroundEllipsoidHeightMeters = groundEllipsoidHeightMeters
         speedReferenceGroundEllipsoidHeightMeters = groundEllipsoidHeightMeters
         movementRelease = ReleaseDecay()
         verticalRelease = ReleaseDecay()
         resetView()
+    }
+
+    /// Takes one measurement of the ground straight below the craft, unless it
+    /// is missing or came from a tile too coarse to trust at this height. Just
+    /// after a jump the only tiles under the craft can be continent-sized, and
+    /// one of those would undo the jump's own elevation. A rejected measurement
+    /// leaves the last one standing.
+    func measureGround(ellipsoidHeightMeters groundHeight: Double, geometricErrorMeters: Double) {
+        guard groundHeight.isFinite, geometricErrorMeters.isFinite else { return }
+        // The ray starts at the craft and points down, so the hit is never
+        // above it.
+        let heightAboveHit = ellipsoidHeightMeters - groundHeight
+        guard geometricErrorMeters <
+            EarthflightTuning.maximumGroundTileErrorFractionOfHeight * heightAboveHit else { return }
+        measuredGroundEllipsoidHeightMeters = groundHeight
     }
 
     /// Moves and turns the craft by one frame of input. `input` is nil when no
@@ -287,6 +316,13 @@ final class FlightState {
         let maximumPitch = Double(EarthflightTuning.maximumPitchFromHorizonDegrees) * .pi / 180
         pitchRadians = min(max(pitchRadians, -maximumPitch), maximumPitch)
         rebuildOrientation()
+
+        // An exponential approach, so the speed curve's ground never overshoots
+        // and a new measurement is felt as a gradual change.
+        let followSeconds = EarthflightTuning.groundReferenceFollowSeconds
+        let followFraction = followSeconds > 0 ? 1 - exp(-Double(dt) / followSeconds) : 1
+        speedReferenceGroundEllipsoidHeightMeters += followFraction *
+            (measuredGroundEllipsoidHeightMeters - speedReferenceGroundEllipsoidHeightMeters)
 
         let horizontalSpeed = (
             EarthflightTuning.minimumHorizontalSpeedMetersPerSecond +

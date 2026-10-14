@@ -80,6 +80,9 @@ struct ImmersiveView: View {
             content.add(headUpDisplay.entity)
             self.headUpDisplay = headUpDisplay
 
+            // Zero, so the first frame measures.
+            var secondsUntilGroundMeasurement = 0.0
+
             sceneUpdateSubscription = content.subscribe(to: SceneEvents.Update.self) { event in
                 if let destination = jump.takePendingDestination() {
                     state.jump(
@@ -95,6 +98,15 @@ struct ImmersiveView: View {
                         renderer.setRenderFrame(renderLocalFromEcef: state.renderLocalFromEcef)
                     }
                 }
+                secondsUntilGroundMeasurement -= event.deltaTime
+                if secondsUntilGroundMeasurement <= 0 {
+                    secondsUntilGroundMeasurement = EarthflightTuning.groundMeasurementIntervalSeconds
+                    let ground = CesiumBridge.groundBelow(ecefPosition: state.craftEcefPosition)
+                    state.measureGround(
+                        ellipsoidHeightMeters: ground.ellipsoidHeightMeters,
+                        geometricErrorMeters: ground.geometricErrorMeters
+                    )
+                }
                 sky.update(
                     renderLocalPosition: state.position,
                     renderLocalFromEcef: state.renderLocalFromEcef,
@@ -104,7 +116,9 @@ struct ImmersiveView: View {
                 )
                 headUpDisplay.update(
                     craftOrientation: state.orientation,
-                    isJumpToActive: jump.isActive
+                    heightAboveGroundMeters: state.heightAboveMeasuredGroundMeters,
+                    isJumpToActive: jump.isActive,
+                    deltaTime: event.deltaTime
                 )
                 // Outside the jump branch, like the sky and the display, so a size
                 // change already asked for still arrives while Jump To holds the
@@ -160,7 +174,7 @@ struct ImmersiveView: View {
         .handlesGameControllerEvents(matching: .gamepad)
         .task {
             gamepad.onJumpToRequested = { jumpTo.start() }
-            gamepad.onHeadUpDisplayToggleRequested = { headUpDisplay?.toggle() }
+            gamepad.onHeadUpDisplayCycleRequested = { headUpDisplay?.cycleMode() }
             gamepad.onViewResetRequested = { flightState.resetView() }
             gamepad.onGrowRequested = { giantMode.grow() }
             gamepad.onShrinkRequested = { giantMode.shrink() }

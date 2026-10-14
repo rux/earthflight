@@ -1,5 +1,6 @@
 #import "CesiumBridge.h"
 
+#include <Cesium3DTilesSelection/BoundingVolume.h>
 #include <Cesium3DTilesSelection/IPrepareRendererResources.h>
 #include <Cesium3DTilesContent/registerAllTileContentTypes.h>
 #include <Cesium3DTilesSelection/Tileset.h>
@@ -14,6 +15,9 @@
 #include <CesiumAsync/IAssetRequest.h>
 #include <CesiumAsync/IAssetResponse.h>
 #include <CesiumAsync/ITaskProcessor.h>
+#include <CesiumGeometry/IntersectionTests.h>
+#include <CesiumGeometry/OrientedBoundingBox.h>
+#include <CesiumGeometry/Ray.h>
 #include <CesiumGeospatial/Cartographic.h>
 #include <CesiumGeospatial/Ellipsoid.h>
 #include <CesiumGeospatial/EarthGravitationalModel1996Grid.h>
@@ -697,6 +701,50 @@ private:
     const uint64_t sessionNumber_;
 };
 
+// MARK: - Ground below the craft
+
+struct GroundHit {
+    glm::dvec3 ecefPosition;
+    double geometricErrorMeters;
+};
+
+/// The nearest hit along `ray` on the most detailed content already loaded
+/// beneath `tile`. A tile's own mesh is tried only when none of its children is
+/// hit: Google's tiles all refine by replacement, so the children are the same
+/// ground in more detail, and a coarse mesh can sit far off it. A child that
+/// misses, because it is not loaded or the ray slips through a seam, falls back
+/// to its parent. Main thread only, like everything else that reads the tree.
+std::optional<GroundHit> nearestLoadedGroundHit(const Tile& tile, const CesiumGeometry::Ray& ray) {
+    // A box wholly above the ray's origin is missed too, since the ray only
+    // runs forward.
+    const CesiumGeometry::OrientedBoundingBox box =
+        getOrientedBoundingBoxFromBoundingVolume(tile.getBoundingVolume());
+    if (!CesiumGeometry::IntersectionTests::rayOBBParametric(ray, box)) return std::nullopt;
+
+    std::optional<GroundHit> nearest;
+    for (const Tile& child : tile.getChildren()) {
+        const std::optional<GroundHit> hit = nearestLoadedGroundHit(child, ray);
+        if (hit && (!nearest ||
+                    glm::distance(hit->ecefPosition, ray.getOrigin()) <
+                        glm::distance(nearest->ecefPosition, ray.getOrigin()))) {
+            nearest = hit;
+        }
+    }
+    if (nearest || tile.getState() != TileLoadState::Done) return nearest;
+
+    const TileRenderContent *content = tile.getContent().getRenderContent();
+    if (!content) return std::nullopt;
+    // The preparer releases a tile's decoded images but keeps its geometry, so
+    // every `Done` tile can still be hit. This is the call Cesium's own
+    // `sampleHeightMostDetailed` makes; it applies the glTF's RTC centre and up
+    // axis itself, and skips back faces as that does.
+    const CesiumGltfContent::GltfUtilities::IntersectResult result =
+        CesiumGltfContent::GltfUtilities::intersectRayGltfModel(
+            ray, content->getModel(), true, tile.getTransform());
+    if (!result.hit) return std::nullopt;
+    return GroundHit{result.hit->worldPoint, tile.getGeometricError()};
+}
+
 } // namespace
 
 @implementation CesiumBridge
@@ -858,6 +906,24 @@ private:
     }
 
     session->tileset->loadTiles();
+}
+
++ (CesiumGroundSample)groundBelowEcefPosition:(simd_double3)ecefPosition {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const CesiumGroundSample none{nan, nan};
+    if (!session) return none;
+    const Tile *root = session->tileset->getRootTile();
+    if (!root) return none;
+
+    const CesiumGeospatial::Ellipsoid& wgs84 = CesiumGeospatial::Ellipsoid::WGS84;
+    const glm::dvec3 origin = glmVectorFromSimd(ecefPosition);
+    const CesiumGeometry::Ray ray(origin, -wgs84.geodeticSurfaceNormal(origin));
+    const std::optional<GroundHit> hit = nearestLoadedGroundHit(*root, ray);
+    if (!hit) return none;
+    const std::optional<CesiumGeospatial::Cartographic> cartographic =
+        wgs84.cartesianToCartographic(hit->ecefPosition);
+    if (!cartographic) return none;
+    return {cartographic->height, hit->geometricErrorMeters};
 }
 
 + (void)tileDidFinishPreparing:(uint64_t)tileIdentifier succeeded:(BOOL)succeeded {

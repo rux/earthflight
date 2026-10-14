@@ -9,7 +9,7 @@ import GameController
 /// buttons call their actions when pressed.
 final class Gamepad {
     var onJumpToRequested: (@MainActor () -> Void)?
-    var onHeadUpDisplayToggleRequested: (@MainActor () -> Void)?
+    var onHeadUpDisplayCycleRequested: (@MainActor () -> Void)?
     var onViewResetRequested: (@MainActor () -> Void)?
     /// D-pad up and down: how large the wearer is. See `GiantMode`.
     var onGrowRequested: (@MainActor () -> Void)?
@@ -123,7 +123,7 @@ final class Gamepad {
             if pressed { self?.onJumpToRequested?() }
         }
         gamepad.buttonOptions?.pressedChangedHandler = { [weak self] _, _, pressed in
-            if pressed { self?.onHeadUpDisplayToggleRequested?() }
+            if pressed { self?.onHeadUpDisplayCycleRequested?() }
         }
         gamepad.rightThumbstickButton?.pressedChangedHandler = { [weak self] _, _, pressed in
             if pressed { self?.onViewResetRequested?() }

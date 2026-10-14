@@ -281,8 +281,31 @@ ancestor shell to hide it.
 * The render origin rebases after 50 km of ECEF displacement, deriving a fresh
   local east/north/up frame from the craft position. The renderer receives the new
   ECEF-to-render-local transform on each rebase.
-* Ellipsoid height is the authoritative altitude. The speed reference is
-  deliberately separate from terrain height or height above ground.
+* Ellipsoid height is the authoritative altitude. The speed curves work from
+  height above the ground below, measured as described next; nothing else does.
+* **The ground below is measured, not assumed.** Once set only by launch and by
+  each jump, the speed reference stayed wherever the jump left it: jump to Mount
+  Hood, fly to Seattle, and everything below about 3,000 m counted as zero
+  height, so descent crawled at 1 m/s kilometres above the city. Now, once a
+  second, `CesiumBridge.groundBelow` casts a ray along geodetic down from the
+  craft against tiles **already loaded**, trying a tile's own mesh only when none
+  of its children is hit, so the most detailed resident geometry wins and a seam
+  falls back to the parent. The preparer keeps each `Done` tile's geometry, so
+  this needs no loading. The ray starts at the craft, so a bridge deck or the
+  Eiffel Tower above it never counts.
+* **A measurement from a coarse tile is ignored.** Its geometric error must be
+  under a quarter of the height above the hit. Just after a jump the only tiles
+  under the craft can be continent-sized and kilometres out, and one of them would
+  undo the jump's own elevation. A miss — nothing loaded below, or the craft below
+  the surface — also leaves the last measurement standing.
+* **The speed curve's ground follows a measurement gradually**, with an
+  exponential time constant, so a tower or a cliff edge passing underneath is a
+  change of speed rather than a jolt.
+* **`sampleHeightMostDetailed` was considered and rejected.** It forces the most
+  detailed tiles at the point to load, and they pass through the renderer's
+  preparation like any other, building RealityKit meshes on the main thread for
+  tiles that are never shown. Timed Google Elevation requests were rejected too:
+  billed per request, slow, network-dependent and blind to buildings.
 * **Heights above the geoid and above the ellipsoid are not interchangeable.**
   Google Elevation returns mean sea level `H`; the bundled Cesium `WW15MGH.DAC`
   EGM96 grid gives `N`; the ellipsoid height is `H + N`.
@@ -503,6 +526,14 @@ without guessing, which way the left stick will move the craft.
   a metre would swing the ring 14 degrees off the very axis it exists to report. At
   a kilometre that lean is 0.03 degrees and the marks are effectively collimated,
   as a real head-up display is. Do not move them closer without re-deriving that.
+* `-` steps through marks, marks with the altimeter, and nothing. The altimeter
+  is a generated text mesh parented to the bar, on the same arc as the right
+  arm's outer end and turned to face the craft, so it rides with pitch and roll.
+  It reads height above the **measured** ground, not the smoothed speed
+  reference, and goes negative below the surface. Its mesh is rebuilt at most
+  four times a second and only when the reading changes. Its material culls back
+  faces, unlike the marks: the text is a closed solid, and with no depth test its
+  back face would blend over the front and double the opacity.
 * `readsDepth` and `writesDepth` are both false, so terrain never buries the
   marks. If they are ever occluded on hardware, the next lever is
   `ModelSortGroupComponent` with a post depth pass, not moving them nearer.
@@ -598,7 +629,9 @@ or "did you mean".
 * MapKit receives the exact trimmed transcript with no region, and
   `response.mapItems.first` wins. Ground height comes from one Google Elevation
   request as mean sea level, corrected to the ellipsoid with the bundled EGM96
-  grid, plus a fixed 1,000 m clearance. No result simply closes the presentation.
+  grid, plus a fixed 1,000 m clearance. The jump sets both the measured ground
+  and the speed reference to that elevation at once. No result simply closes the
+  presentation.
 * A completed jump performs the same complete orientation reset as a right-stick
   click, preserves active controller input, clears any movement tail, centres a
   fresh render frame at the new ECEF position and sets the speed-reference ground

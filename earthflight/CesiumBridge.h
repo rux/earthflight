@@ -40,6 +40,15 @@ typedef struct {
     int64_t maximumCachedBytes;
 } CesiumTileSelectionSettings;
 
+/// The first surface straight below a point, and how coarse the tile it was
+/// found in is. Both are NaN when no tile Cesium holds lies below the point.
+typedef struct {
+    double ellipsoidHeightMeters;
+    /// The tile's geometric error: roughly how far its mesh may stray from the
+    /// true surface.
+    double geometricErrorMeters;
+} CesiumGroundSample;
+
 @interface CesiumBridge : NSObject
 
 // WGS84 conversions. Angles are degrees; positions and heights are metres.
@@ -77,6 +86,11 @@ typedef struct {
                             direction:(simd_double3)ecefDirection
                                    up:(simd_double3)ecefUp
                             deltaTime:(double)deltaTime NS_SWIFT_UI_ACTOR;
+/// Casts a ray along geodetic down from `ecefPosition` against tiles already
+/// loaded, preferring the most detailed. It loads nothing, so it costs no
+/// network or RealityKit work, and anything above the point never counts.
++ (CesiumGroundSample)groundBelowEcefPosition:(simd_double3)ecefPosition
+    NS_SWIFT_NAME(groundBelow(ecefPosition:)) NS_SWIFT_UI_ACTOR;
 /// Answers one `onPrepareTile`. Deliberately not main-actor: it takes a mutex
 /// and resolves a Cesium promise, both safe from any thread.
 + (void)tileDidFinishPreparing:(uint64_t)tileIdentifier succeeded:(BOOL)succeeded;

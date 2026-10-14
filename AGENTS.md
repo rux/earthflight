@@ -129,7 +129,7 @@ blocker — and state the blocker before changing course.
 | `HeadTracking.swift` | Head pose relative to the craft |
 | `SkyDome.swift` | The air-mass sky gradient and its dome |
 | `StarField.swift` | Stars, faded in by air mass |
-| `HeadUpDisplay.swift` | The nose ring and horizon bar |
+| `HeadUpDisplay.swift` | The nose ring, horizon bar and optional altimeter |
 | `GiantMode.swift` | How large the wearer is, and therefore how small the world is |
 | `JumpTo.swift` | The `+` voice teleport: speech, MapKit, elevation, geoid correction |
 | `GoogleAttributionView.swift` | Required Google branding and current credits |
@@ -157,7 +157,7 @@ Verify any new button on the headset rather than inferring it.
 | Left / top face button (`buttonX` / `buttonY`) | Roll left / roll right |
 | Bottom face button (`buttonA`) | General speed boost |
 | Primary menu button (`buttonMenu`, `+`) | Open voice Jump To |
-| Secondary menu button (`buttonOptions`, `-`) | Toggle the head-up display |
+| Secondary menu button (`buttonOptions`, `-`) | Cycle the head-up display: marks, marks with altimeter, off |
 | D-pad up / down | Grow / shrink the wearer; see giant mode below |
 
 On an Xbox controller the shoulder buttons, triggers and menu buttons should be

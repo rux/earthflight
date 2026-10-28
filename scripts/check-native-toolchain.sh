@@ -19,11 +19,11 @@ source "$project_dir/scripts/native-toolchain-manifest.sh"
 
 manifest_file="$project_dir/build/cesium-visionos/build-manifest.txt"
 
+# Both lines carry the "error:" prefix because Xcode's issue navigator shows
+# only prefixed lines; anything else is buried in the full build log.
 fail() {
     print -u2 "error: $1"
-    print -u2 ""
-    print -u2 "Rebuild the native Cesium dependencies for this toolchain, then build again:"
-    print -u2 "  DEVELOPER_DIR=\"$DEVELOPER_DIR\" \"$project_dir/scripts/build-cesium-visionos.sh\""
+    print -u2 "error: Rebuild Cesium Native for this toolchain, then build again: DEVELOPER_DIR=\"$DEVELOPER_DIR\" \"$project_dir/scripts/build-cesium-visionos.sh\""
     exit 1
 }
 

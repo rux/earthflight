@@ -118,10 +118,10 @@ final class HeadUpDisplay {
     func update(
         craftOrientation: simd_quatf,
         heightAboveGroundMeters: Double,
-        isJumpToActive: Bool,
+        isJumpToCardShown: Bool,
         deltaTime: TimeInterval
     ) {
-        entity.isEnabled = mode != .hidden && !isJumpToActive
+        entity.isEnabled = mode != .hidden && !isJumpToCardShown
         guard entity.isEnabled else {
             return
         }

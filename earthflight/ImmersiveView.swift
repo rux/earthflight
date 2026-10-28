@@ -10,6 +10,7 @@ struct ImmersiveView: View {
     @State private var jumpTo = JumpTo()
     @State private var giantMode = GiantMode()
     @State private var attribution = ""
+    @State private var isRateLimited = false
     @State private var sky: SkyDome?
     @State private var headUpDisplay: HeadUpDisplay?
     // Held here rather than by anything the update closure captures, which
@@ -44,6 +45,13 @@ struct ImmersiveView: View {
                 jumpOverlayEntity.position = [0, 1.5, -1.25]
                 jumpOverlayEntity.components.set(BillboardComponent())
                 content.add(jumpOverlayEntity)
+            }
+            if let rateLimitNoticeEntity = attachments.entity(for: "RateLimitNotice") {
+                // Below the Jump To card, about 16 degrees under the nose, so it
+                // covers neither the view ahead nor the card.
+                rateLimitNoticeEntity.position = [0, 1.15, -1.25]
+                rateLimitNoticeEntity.components.set(BillboardComponent())
+                content.add(rateLimitNoticeEntity)
             }
 
             let apiKey = Bundle.main.object(forInfoDictionaryKey: "GoogleMapsAPIKey") as? String ?? ""
@@ -117,13 +125,24 @@ struct ImmersiveView: View {
                 headUpDisplay.update(
                     craftOrientation: state.orientation,
                     heightAboveGroundMeters: state.heightAboveMeasuredGroundMeters,
-                    isJumpToActive: jump.isActive,
+                    isJumpToCardShown: jump.isCardShown,
                     deltaTime: event.deltaTime
                 )
                 // Outside the jump branch, like the sky and the display, so a size
                 // change already asked for still arrives while Jump To holds the
                 // craft still.
                 giant.advance(deltaTime: event.deltaTime)
+                // Written only on a change, so SwiftUI is not asked to redraw
+                // the notice every frame. The bridge logs a 429 only when it
+                // finally gives up on a tile, so these lines show the retries.
+                let isRateLimitedNow =
+                    CesiumBridge.secondsSinceRateLimit < EarthflightTuning.rateLimitNoticeSeconds
+                if isRateLimitedNow != isRateLimited {
+                    isRateLimited = isRateLimitedNow
+                    print(isRateLimitedNow
+                        ? "Google rate limit: HTTP 429, tile requests waiting to retry"
+                        : "Google rate limit: no 429 for \(EarthflightTuning.rateLimitNoticeSeconds) s")
+                }
 
                 // Double until the last moment; RealityKit takes Float.
                 let worldFromRenderLocal = simd_float4x4(FlightState.worldFromRenderLocal(
@@ -155,16 +174,32 @@ struct ImmersiveView: View {
         } attachments: {
             Attachment(id: "JumpToOverlay") {
                 VStack(spacing: 8) {
-                    Text(jumpTo.displayPrompt)
-                    if !jumpTo.transcript.isEmpty {
-                        Text(jumpTo.transcript)
+                    if let place = jumpTo.arrivedPlace {
+                        Text(place.name)
+                            .font(.title)
+                        if let context = place.context {
+                            Text(context)
+                        }
+                    } else {
+                        Text(jumpTo.displayPrompt)
+                        if !jumpTo.transcript.isEmpty {
+                            Text(jumpTo.transcript)
+                        }
                     }
                 }
-                .font(.title3)
-                .padding(18)
-                .background(.black.opacity(0.7), in: .rect(cornerRadius: 12))
-                .opacity(jumpTo.isActive ? 1 : 0)
+                .font(.title2)
+                .padding(24)
+                .background(.black.opacity(0.7), in: .rect(cornerRadius: 16))
+                .opacity(jumpTo.isCardShown ? 1 : 0)
                 .allowsHitTesting(false)
+            }
+            Attachment(id: "RateLimitNotice") {
+                Text("Google is limiting tile requests: slow down")
+                    .font(.title3)
+                    .padding(18)
+                    .background(.black.opacity(0.7), in: .rect(cornerRadius: 12))
+                    .opacity(isRateLimited ? 1 : 0)
+                    .allowsHitTesting(false)
             }
         }
         .overlay(alignment: .bottomTrailing) {

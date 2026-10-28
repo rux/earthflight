@@ -81,6 +81,10 @@ nonisolated enum EarthflightTuning {
 
     static let jumpHeightAboveGroundMeters: Double = 1_000
 
+    // How long the Jump To card names the place a jump arrived at. Flight
+    // carries on while it shows, and `+` starts another jump straight away.
+    static let jumpArrivalCardSeconds: Double = 3
+
     // MARK: - Planetary precision
 
     // The render origin moves to the craft once it is this far away in ECEF.
@@ -113,7 +117,9 @@ nonisolated enum EarthflightTuning {
     static let loadingDescendantLimit: UInt32 = 20
 
     // Tile requests in flight at once. This limits loading, not what is shown
-    // or cached.
+    // or cached. Google's rate limit is the real ceiling: from 10 upwards it
+    // answered HTTP 429, and at 8 it did not. Cesium's default of 20 knows
+    // nothing of Google's quota.
     static let maximumSimultaneousTileLoads: UInt32 = 8
 
     // Cesium's in-memory tile cache, counted as decoded texels plus geometry.
@@ -129,6 +135,10 @@ nonisolated enum EarthflightTuning {
     // MARK: - Presentation
 
     static let attributionTrailingInsetPoints: Double = 220
+
+    // How long the "slow down" notice stays up after Google last refused a
+    // tile request for coming too fast. Refused tiles are retried meanwhile.
+    static let rateLimitNoticeSeconds: Double = 1
 
     // MARK: - Giant mode
 

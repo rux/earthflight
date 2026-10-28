@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
@@ -423,6 +424,59 @@ private:
     std::shared_ptr<AppleAssetResponse> response_;
 };
 
+/// When Google last answered a request with 429, as steady-clock nanoseconds,
+/// or zero if it never has. Written on URLSession's queue and read on the main
+/// thread.
+std::atomic<int64_t> lastRateLimitNanoseconds{0};
+
+int64_t steadyClockNanoseconds() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// Google answers 429 when tiles are asked for faster than the project's quota
+// allows. Cesium fails a tile for good on any HTTP error, and the failure frees
+// its load slot at once for the next request, which is refused in turn: left
+// alone, every tile asked for until the quota recovers becomes a permanent
+// hole. So a 429 is waited out here and the same request sent again. The slot
+// stays held meanwhile, and that is what slows the requests down.
+constexpr int64_t rateLimitRetryNanoseconds = 2 * NSEC_PER_SEC;
+// About two minutes, so a per-minute quota has recovered before a tile is
+// given up on. The bound also lets a stopped session's last loads finish.
+constexpr int maximumRateLimitedAttempts = 60;
+
+void sendWaitingOutRateLimits(
+    NSURLRequest *request,
+    std::shared_ptr<AppleAssetRequest> assetRequest,
+    CesiumAsync::Promise<std::shared_ptr<CesiumAsync::IAssetRequest>> promise,
+    int attempt) {
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSHTTPURLResponse *http = [response isKindOfClass:NSHTTPURLResponse.class] ? (NSHTTPURLResponse *)response : nil;
+        if (http.statusCode == 429) {
+            lastRateLimitNanoseconds.store(steadyClockNanoseconds());
+            if (attempt < maximumRateLimitedAttempts) {
+                dispatch_after(
+                    dispatch_time(DISPATCH_TIME_NOW, rateLimitRetryNanoseconds),
+                    dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+                    ^{ sendWaitingOutRateLimits(request, assetRequest, promise, attempt + 1); });
+                return;
+            }
+        }
+        if (!http) {
+            NSLog(@"Google tile request failed: domain=%@ code=%ld", error.domain ?: @"unknown", (long)error.code);
+        } else if (http.statusCode >= 400) {
+            NSLog(@"Google tile request failed: HTTP %ld (%lu bytes)", (long)http.statusCode, (unsigned long)data.length);
+        }
+        // With no HTTP response at all, the request carries no response,
+        // which every Cesium loader treats as a failed load.
+        if (http) {
+            assetRequest->setResponse(std::make_shared<AppleAssetResponse>(http, data ?: [NSData data]));
+        }
+        promise.resolve(assetRequest);
+    }];
+    [task resume];
+}
+
 class AppleAssetAccessor final : public CesiumAsync::IAssetAccessor {
 public:
     CesiumAsync::Future<std::shared_ptr<CesiumAsync::IAssetRequest>> get(
@@ -444,22 +498,7 @@ public:
             requestHeaders.emplace(header.first, header.second);
         }
         if (!payload.empty()) request.HTTPBody = [NSData dataWithBytes:payload.data() length:payload.size()];
-        auto assetRequest = std::make_shared<AppleAssetRequest>(verb, url, std::move(requestHeaders));
-        NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-            NSHTTPURLResponse *http = [response isKindOfClass:NSHTTPURLResponse.class] ? (NSHTTPURLResponse *)response : nil;
-            if (!http) {
-                NSLog(@"Google tile request failed: domain=%@ code=%ld", error.domain ?: @"unknown", (long)error.code);
-            } else if (http.statusCode >= 400) {
-                NSLog(@"Google tile request failed: HTTP %ld (%lu bytes)", (long)http.statusCode, (unsigned long)data.length);
-            }
-            // With no HTTP response at all, the request carries no response,
-            // which every Cesium loader treats as a failed load.
-            if (http) {
-                assetRequest->setResponse(std::make_shared<AppleAssetResponse>(http, data ?: [NSData data]));
-            }
-            promise.resolve(assetRequest);
-        }];
-        [task resume];
+        sendWaitingOutRateLimits(request, std::make_shared<AppleAssetRequest>(verb, url, std::move(requestHeaders)), promise, 1);
         return future;
     }
 
@@ -924,6 +963,12 @@ std::optional<GroundHit> nearestLoadedGroundHit(const Tile& tile, const CesiumGe
         wgs84.cartesianToCartographic(hit->ecefPosition);
     if (!cartographic) return none;
     return {cartographic->height, hit->geometricErrorMeters};
+}
+
++ (double)secondsSinceRateLimit {
+    const int64_t last = lastRateLimitNanoseconds.load();
+    if (last == 0) return std::numeric_limits<double>::infinity();
+    return static_cast<double>(steadyClockNanoseconds() - last) / 1e9;
 }
 
 + (void)tileDidFinishPreparing:(uint64_t)tileIdentifier succeeded:(BOOL)succeeded {

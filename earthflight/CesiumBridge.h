@@ -94,6 +94,9 @@ typedef struct {
 /// Answers one `onPrepareTile`. Deliberately not main-actor: it takes a mutex
 /// and resolves a Cesium promise, both safe from any thread.
 + (void)tileDidFinishPreparing:(uint64_t)tileIdentifier succeeded:(BOOL)succeeded;
+/// Seconds since Google last refused a request for coming too fast (HTTP 429),
+/// or infinity if it never has. Reads an atomic, so safe from any thread.
+@property (class, nonatomic, readonly) double secondsSinceRateLimit;
 + (void)stopTiles NS_SWIFT_UI_ACTOR;
 
 // Test seams for two internal steps that have no public route in.

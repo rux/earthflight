@@ -16,10 +16,18 @@ final class JumpTo {
         case readyToJump
     }
 
+    /// What MapKit calls the place a jump went to, and the city and country it
+    /// is in when MapKit knows them.
+    struct Place {
+        let name: String
+        let context: String?
+    }
+
     struct Destination {
         let longitudeDegrees: Double
         let latitudeDegrees: Double
         let groundEllipsoidHeightMeters: Double
+        let place: Place
     }
 
     private struct ElevationResponse: Decodable {
@@ -44,11 +52,19 @@ final class JumpTo {
 
     private(set) var phase: Phase = .idle
     private(set) var transcript = ""
+    /// Where the last jump arrived, named on the card for a few seconds. It is
+    /// not a phase, so flight carries on while it shows.
+    private(set) var arrivedPlace: Place?
     private var pendingDestination: Destination?
     private var operationTask: Task<Void, Never>?
+    private var arrivalDismissal: Task<Void, Never>?
     private var lastTranscriptChange: ContinuousClock.Instant?
 
     var isActive: Bool { phase != .idle }
+
+    /// The card is up while a jump is under way and while it names where one
+    /// arrived.
+    var isCardShown: Bool { isActive || arrivedPlace != nil }
 
     var displayPrompt: String {
         switch phase {
@@ -63,6 +79,7 @@ final class JumpTo {
 
     func start() {
         guard !isActive else { return }
+        hideArrival()
         transcript = ""
         lastTranscriptChange = nil
         phase = .preparingSpeech
@@ -74,7 +91,7 @@ final class JumpTo {
                 self.phase = .searching
                 let item = try await self.firstMapItem(for: query)
                 self.phase = .resolvingElevation
-                let destination = try await self.resolveDestination(from: item)
+                let destination = try await self.resolveDestination(from: item, query: query)
                 self.pendingDestination = destination
                 self.phase = .readyToJump
             } catch is CancellationError {
@@ -86,19 +103,41 @@ final class JumpTo {
         }
     }
 
-    /// Ends any in-flight capture/search/elevation work and returns to idle.
-    /// Cancelling `operationTask` unwinds `captureTranscript`'s task group,
-    /// which stops the audio tap and engine through its existing `defer`.
-    /// Safe to call when already idle.
+    /// Ends any in-flight capture/search/elevation work, returns to idle and
+    /// takes the card down. Cancelling `operationTask` unwinds
+    /// `captureTranscript`'s task group, which stops the audio tap and engine
+    /// through its existing `defer`. Safe to call when already idle.
     func cancel() {
         finish()
+        hideArrival()
     }
 
+    /// The resolved destination, once. The scene update takes it at the moment
+    /// it jumps, so that is when the arrival card starts counting.
     func takePendingDestination() -> Destination? {
         guard let destination = pendingDestination else { return nil }
         pendingDestination = nil
         finish()
+        showArrival(at: destination.place)
         return destination
+    }
+
+    private func showArrival(at place: Place) {
+        arrivalDismissal?.cancel()
+        arrivedPlace = place
+        arrivalDismissal = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(EarthflightTuning.jumpArrivalCardSeconds))
+            // Cancelled by a new jump or the session's end, either of which
+            // may already have put a newer place on the card.
+            guard !Task.isCancelled else { return }
+            self?.arrivedPlace = nil
+        }
+    }
+
+    private func hideArrival() {
+        arrivalDismissal?.cancel()
+        arrivalDismissal = nil
+        arrivedPlace = nil
     }
 
     private func captureTranscript() async throws -> String {
@@ -255,7 +294,7 @@ final class JumpTo {
         return item
     }
 
-    private func resolveDestination(from item: MKMapItem) async throws -> Destination {
+    private func resolveDestination(from item: MKMapItem, query: String) async throws -> Destination {
         let coordinate = item.location.coordinate
         let elevation = try await elevationAt(
             latitudeDegrees: coordinate.latitude,
@@ -269,7 +308,11 @@ final class JumpTo {
         return Destination(
             longitudeDegrees: coordinate.longitude,
             latitudeDegrees: coordinate.latitude,
-            groundEllipsoidHeightMeters: groundEllipsoid
+            groundEllipsoidHeightMeters: groundEllipsoid,
+            place: Place(
+                name: item.name ?? query,
+                context: item.addressRepresentations?.cityWithContext
+            )
         )
     }
 

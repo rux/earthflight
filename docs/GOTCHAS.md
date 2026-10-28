@@ -175,7 +175,27 @@ flat; broad low-detail horizon coverage is expected and correct.
 * Do not classify tiles by distance or add a second LOD system.
 * `maximumSimultaneousTileLoads` limits concurrent loading, not how many tiles are
   visible or cached. The Cesium cache it feeds is transient and in memory; there is
-  no disk cache and none is wanted.
+  no disk cache and none is wanted. Each slot is held from the request until
+  RealityKit has built the tile on the main thread.
+
+### Google's rate limit
+
+* **Google answers HTTP 429 when tiles are requested too fast**, and Google's
+  quota, not Cesium, is what caps loading. With `maximumSimultaneousTileLoads` at
+  10 or more the owner could provoke 429s; at 8 they could not. Cesium's default
+  of 20 knows nothing of the quota.
+* **A 429 must not reach Cesium.** Cesium fails a tile for good on any HTTP
+  error, and the failure frees its slot at once for the next request, which is
+  refused in turn. Every tile requested until the quota recovered became a
+  permanent hole, and whole regions showed the sky's ground fill.
+  `sendWaitingOutRateLimits` in the bridge waits two seconds and sends the same
+  request again, for about two minutes before letting it fail. The slot stays
+  held while it waits, and that holding is the throttle.
+* The bridge records when the last 429 arrived; `secondsSinceRateLimit` reads it
+  from any thread, and `ImmersiveView` shows a "slow down" notice below the nose
+  for `rateLimitNoticeSeconds` after each one. It also prints a console line
+  when the notice appears and when it goes; the bridge logs a 429 only when it
+  finally gives up on a tile.
 
 ### The transition is an opaque readiness-gated handoff
 
@@ -257,6 +277,13 @@ flat; broad low-detail horizon coverage is expected and correct.
   tile loading badly. Worse than the defect.
 * Never retiring anything is much worse still: large areas stay stuck on coarse
   tiles. Retirement is doing real work.
+* Reordering the load queue made no visible difference. Cesium's own order is
+  `(1 - cos θ) × distance`, so ground near the line of sight loads first at any
+  range, which a play-tester noticed as distant ground refining before the ground
+  beside the craft. Loading nearest first instead, measured from a point a
+  second ahead of the craft, was built through Cesium's public
+  `TileLoadRequester` and removed: on the headset, fast flight still outran
+  loading, because Google's rate limit caps how many tiles arrive, not which.
 * A completed GPU copy of each new raw texture was not a presentation barrier — it
   still flashed, and cost preparation time and transient memory.
 * Counting camera-visible children that are neither selected nor an ancestor of
@@ -283,10 +310,7 @@ ancestor shell to hide it.
   ECEF-to-render-local transform on each rebase.
 * Ellipsoid height is the authoritative altitude. The speed curves work from
   height above the ground below, measured as described next; nothing else does.
-* **The ground below is measured, not assumed.** Once set only by launch and by
-  each jump, the speed reference stayed wherever the jump left it: jump to Mount
-  Hood, fly to Seattle, and everything below about 3,000 m counted as zero
-  height, so descent crawled at 1 m/s kilometres above the city. Now, once a
+* **The ground below is measured, not assumed.** Once a
   second, `CesiumBridge.groundBelow` casts a ray along geodetic down from the
   craft against tiles **already loaded**, trying a tile's own mesh only when none
   of its children is hit, so the most detailed resident geometry wins and a seam
@@ -537,8 +561,9 @@ without guessing, which way the left stick will move the craft.
 * `readsDepth` and `writesDepth` are both false, so terrain never buries the
   marks. If they are ever occluded on hardware, the next lever is
   `ModelSortGroupComponent` with a post depth pass, not moving them nearer.
-* They are hidden while a Jump To is active, because the card is billboarded at the
-  same azimuth and the marks would be drawn over its text. That is simpler than
+* They are hidden while the Jump To card is up, including the seconds it names
+  the place a jump arrived at, because the card is billboarded at the same
+  azimuth and the marks would be drawn over its text. That is simpler than
   sorting them.
 * Both marks are plain generated geometry with no texture. If the edges ever crawl
   on hardware, the fix is `StarField`'s soft-edged opacity texture, not more
@@ -632,6 +657,14 @@ or "did you mean".
   grid, plus a fixed 1,000 m clearance. The jump sets both the measured ground
   and the speed reference to that elevation at once. No result simply closes the
   presentation.
+* **After a jump the card names where it arrived**, for
+  `EarthflightTuning.jumpArrivalCardSeconds`: MapKit's `name` for the item (the
+  spoken query if it has none) over `addressRepresentations.cityWithContext`.
+  The clock starts when the scene update takes the destination, which is the
+  jump itself. This is deliberately not a `Phase`: `isActive` pauses flight, so
+  it is false again from the jump frame and the wearer can fly away while the
+  card shows. `isCardShown` covers both, for the card and the head-up display.
+  `+` replaces it with a new jump at once.
 * A completed jump performs the same complete orientation reset as a right-stick
   click, preserves active controller input, clears any movement tail, centres a
   fresh render frame at the new ECEF position and sets the speed-reference ground

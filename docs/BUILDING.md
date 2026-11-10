@@ -67,6 +67,8 @@ The script is the single source of truth for CMake options; do not duplicate the
 
 The `earthflight` target's first build phase, "Verify Cesium Native toolchain" (`scripts/check-native-toolchain.sh`), compares the active Xcode location and build, Clang version, SDK build, deployment target, architecture, pinned commits and patch hashes with `build-manifest.txt`. If anything differs, it fails the build and prints the rebuild command. Run that command; do not work around the check. Linking libraries built by another toolchain is not supported.
 
+The error includes a copyable command using a checkout-relative script path and the active Xcode's `DEVELOPER_DIR`. Open Terminal in your checkout folder (the folder containing `earthflight.xcodeproj`), run the command, and wait for `Native build manifest written to` and the Terminal prompt before building again in Xcode. The rebuild can take several minutes.
+
 The phase needs `ENABLE_USER_SCRIPT_SANDBOXING = NO` on the target, because the sandbox blocks reads of the manifest, the patches and the submodule checkouts.
 
 After a new Xcode or SDK: rebuild the native dependencies, rebuild the app, run the tests and a headset smoke test, then update the table above.

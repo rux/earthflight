@@ -19,11 +19,13 @@ source "$project_dir/scripts/native-toolchain-manifest.sh"
 
 manifest_file="$project_dir/build/cesium-visionos/build-manifest.txt"
 
-# Both lines carry the "error:" prefix because Xcode's issue navigator shows
+# All recovery lines carry the "error:" prefix because Xcode's issue navigator shows
 # only prefixed lines; anything else is buried in the full build log.
 fail() {
     print -u2 "error: $1"
-    print -u2 "error: Rebuild Cesium Native for this toolchain, then build again: DEVELOPER_DIR=\"$DEVELOPER_DIR\" \"$project_dir/scripts/build-cesium-visionos.sh\""
+    print -u2 "error: Open Terminal in your earthflight checkout folder (the folder containing earthflight.xcodeproj), then copy and run this command:"
+    print -ru2 -- "error: DEVELOPER_DIR=${(q)DEVELOPER_DIR} ./scripts/build-cesium-visionos.sh"
+    print -u2 "error: Wait for 'Native build manifest written to' and the Terminal prompt, then build again in Xcode. The rebuild can take several minutes."
     exit 1
 }
 

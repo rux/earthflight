@@ -13,10 +13,11 @@ It is a hobby project, not a mathematical proof.
 
 ## The other three files
 
-* /**docs/GOTCHAS.md** — hard-won knowledge, by subsystem. Read the relevant section
-  before touching tiles, textures, coordinates, sky, stars, the HUD, Jump To or
-  any Objective-C callback. It exists so you do not repeat an investigation that
-  has already been paid for once.
+* /**docs/GOTCHAS.md** — hard-won knowledge the code cannot show: library and
+  platform traps, and approaches already tried and abandoned. Read the relevant
+  section before touching tiles, Cesium, RealityKit presentation, flight, the
+  sky, giant mode, attribution or any Objective-C callback. It exists so you do
+  not repeat an investigation that has already been paid for once.
 * **/**docs/MILESTONES.md** — what was built, in order, and what is left.
 * **/**docs/BUILDING.md** — how to build from scratch: the known-good toolchain,
   pinned commits and exact commands. Instructions, not history; keep it that way.

@@ -53,6 +53,22 @@ struct ImmersiveView: View {
                 rateLimitNoticeEntity.components.set(BillboardComponent())
                 content.add(rateLimitNoticeEntity)
             }
+            if let attributionEntity = attachments.entity(for: "GoogleAttribution") {
+                // An attachment faces +z, towards the wearer. Tipping it +90
+                // degrees about x turns its face to -y, so it hangs face down
+                // above the wearer with the top of the text pointing back
+                // towards them, and reads the right way round when they tip
+                // their head back to look up. Overhead because the wearer
+                // mostly looks down at the world, and the sky is empty. Not
+                // billboarded: it stays put, like a placard on a cockpit roof.
+                attributionEntity.position = [
+                    0,
+                    EarthflightTuning.attributionHeightMeters,
+                    -EarthflightTuning.attributionForwardMeters
+                ]
+                attributionEntity.orientation = simd_quatf(angle: .pi / 2, axis: [1, 0, 0])
+                content.add(attributionEntity)
+            }
 
             let apiKey = Bundle.main.object(forInfoDictionaryKey: "GoogleMapsAPIKey") as? String ?? ""
             CesiumBridge.startTiles(
@@ -201,10 +217,9 @@ struct ImmersiveView: View {
                     .opacity(isRateLimited ? 1 : 0)
                     .allowsHitTesting(false)
             }
-        }
-        .overlay(alignment: .bottomTrailing) {
-            GoogleAttributionView(attribution: attribution)
-                .padding(.trailing, CGFloat(EarthflightTuning.attributionTrailingInsetPoints))
+            Attachment(id: "GoogleAttribution") {
+                GoogleAttributionView(attribution: attribution)
+            }
         }
         .handlesGameControllerEvents(matching: .gamepad)
         .task {

@@ -134,7 +134,12 @@ nonisolated enum EarthflightTuning {
 
     // MARK: - Presentation
 
-    static let attributionTrailingInsetPoints: Double = 220
+    // Where Google's logo and credits hang, face down, above and ahead of the
+    // wearer: in the empty sky rather than over the ground they watch.
+    // Measured from the immersive space's origin on the floor beneath the
+    // wearer: up from the floor, and forward along the launch view.
+    static let attributionHeightMeters: Float = 2.5
+    static let attributionForwardMeters: Float = 0.8
 
     // How long the "slow down" notice stays up after Google last refused a
     // tile request for coming too fast. Refused tiles are retried meanwhile.

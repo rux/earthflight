@@ -167,9 +167,8 @@ nonisolated enum EarthflightTuning {
     // MARK: - Head-up display
 
     // A ring on the nose axis and a bar in the local horizontal plane, with a
-    // gap the ring sits in. Sizes are angles, not metres, because the marks
-    // are far enough away to be effectively collimated; see `HeadUpDisplay`.
-    static let headUpDisplayDistanceMeters: Float = 1_000
+    // gap the ring sits in. Sizes are angles, not metres: how far away each
+    // mark is drawn follows the ground it covers; see `HeadUpDisplay`.
     static let headUpDisplayColour = SIMD3<Double>(0.12, 0.75, 0.12)
     static let headUpDisplayOpacity: Float = 0.45
 

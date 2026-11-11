@@ -6,17 +6,21 @@ import GameController
 /// profile names every element by position or role, never by the label printed
 /// on it, so an Xbox or PlayStation controller maps the same way. The sticks and
 /// held buttons are read once a frame through `currentInput`; the one-shot
-/// buttons call their actions when pressed.
+/// buttons are reported as they are pressed.
+@MainActor
 final class Gamepad {
-    var onJumpToRequested: (@MainActor () -> Void)?
-    var onHeadUpDisplayCycleRequested: (@MainActor () -> Void)?
-    var onViewResetRequested: (@MainActor () -> Void)?
-    /// D-pad up and down: how large the wearer is. See `GiantMode`.
-    var onGrowRequested: (@MainActor () -> Void)?
-    var onShrinkRequested: (@MainActor () -> Void)?
+    /// The one-shot buttons, named for what they ask for.
+    enum Button: CaseIterable {
+        case jumpTo
+        case cycleHeadUpDisplay
+        case resetView
+        /// How large the wearer is. See `GiantMode`.
+        case grow
+        case shrink
+    }
 
-    private var connectionObserver: NSObjectProtocol?
-    private var disconnectionObserver: NSObjectProtocol?
+    private var onPress: (@MainActor (Button) -> Void)?
+    private var observers: [NSObjectProtocol] = []
     // Matched by identity against GameController's live list, so the same
     // physical controller binds again through the new object GameController
     // hands out when it reconnects.
@@ -31,26 +35,16 @@ final class Gamepad {
     // `MainActor.assumeIsolated` is a checked assertion, not a suppression:
     // `queue: .main` runs the block on the main thread, and a main-thread post
     // is delivered synchronously.
-    func start() {
-        guard connectionObserver == nil else {
+    func start(onPress: @escaping @MainActor (Button) -> Void) {
+        guard observers.isEmpty else {
             return
         }
-        connectionObserver = NotificationCenter.default.addObserver(
-            forName: .GCControllerDidConnect,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.reconcileBinding()
-            }
-        }
-        disconnectionObserver = NotificationCenter.default.addObserver(
-            forName: .GCControllerDidDisconnect,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.reconcileBinding()
+        self.onPress = onPress
+        observers = [Notification.Name.GCControllerDidConnect, .GCControllerDidDisconnect].map { name in
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.reconcileBinding()
+                }
             }
         }
         reconcileBinding()
@@ -59,15 +53,12 @@ final class Gamepad {
     /// Removes this instance's observers and handlers. Safe to call twice or
     /// without `start`.
     func stop() {
-        if let connectionObserver {
-            NotificationCenter.default.removeObserver(connectionObserver)
+        for observer in observers {
+            NotificationCenter.default.removeObserver(observer)
         }
-        connectionObserver = nil
-        if let disconnectionObserver {
-            NotificationCenter.default.removeObserver(disconnectionObserver)
-        }
-        disconnectionObserver = nil
+        observers = []
         unbind()
+        onPress = nil
     }
 
     /// This frame's input, or nil when no controller is bound.
@@ -94,6 +85,22 @@ final class Gamepad {
         )
     }
 
+    /// The element behind each one-shot button. `buttonMenu` is the primary
+    /// menu button and `buttonOptions` the secondary one: + and - on a Switch
+    /// Pro.
+    private static func element(
+        for button: Button,
+        on gamepad: GCExtendedGamepad
+    ) -> GCControllerButtonInput? {
+        switch button {
+        case .jumpTo: gamepad.buttonMenu
+        case .cycleHeadUpDisplay: gamepad.buttonOptions
+        case .resetView: gamepad.rightThumbstickButton
+        case .grow: gamepad.dpad.up
+        case .shrink: gamepad.dpad.down
+        }
+    }
+
     /// Releases a binding whose controller has gone, then binds the first
     /// extended gamepad if nothing is bound.
     private func reconcileBinding() {
@@ -117,36 +124,23 @@ final class Gamepad {
         boundController = controller
         print("Controller connected: vendor=\(controller.vendorName ?? "unknown"), category=\(controller.productCategory)")
 
-        // `buttonMenu` is the primary menu button and `buttonOptions` the
-        // secondary one: + and - on a Switch Pro.
-        gamepad.buttonMenu.pressedChangedHandler = { [weak self] _, _, pressed in
-            if pressed { self?.onJumpToRequested?() }
-        }
-        gamepad.buttonOptions?.pressedChangedHandler = { [weak self] _, _, pressed in
-            if pressed { self?.onHeadUpDisplayCycleRequested?() }
-        }
-        gamepad.rightThumbstickButton?.pressedChangedHandler = { [weak self] _, _, pressed in
-            if pressed { self?.onViewResetRequested?() }
-        }
-        gamepad.dpad.up.pressedChangedHandler = { [weak self] _, _, pressed in
-            if pressed { self?.onGrowRequested?() }
-        }
-        gamepad.dpad.down.pressedChangedHandler = { [weak self] _, _, pressed in
-            if pressed { self?.onShrinkRequested?() }
+        for button in Button.allCases {
+            Self.element(for: button, on: gamepad)?.pressedChangedHandler = { [weak self] _, _, pressed in
+                if pressed { self?.onPress?(button) }
+            }
         }
     }
 
     private func unbind() {
-        guard let gamepad = boundController?.extendedGamepad else {
-            boundController = nil
+        guard let controller = boundController else {
             return
         }
-        gamepad.buttonMenu.pressedChangedHandler = nil
-        gamepad.buttonOptions?.pressedChangedHandler = nil
-        gamepad.rightThumbstickButton?.pressedChangedHandler = nil
-        gamepad.dpad.up.pressedChangedHandler = nil
-        gamepad.dpad.down.pressedChangedHandler = nil
         boundController = nil
+        if let gamepad = controller.extendedGamepad {
+            for button in Button.allCases {
+                Self.element(for: button, on: gamepad)?.pressedChangedHandler = nil
+            }
+        }
         print("Controller disconnected.")
     }
 

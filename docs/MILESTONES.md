@@ -18,6 +18,7 @@ see the shape of the thing quickly, not as work to redo.
 | 9 | Additions beyond the brief | An air-mass sky gradient, a star field, a head-up display, and the move to Swift 6 language mode |
 | 10 | Giant mode | The D-pad scales the wearer in doublings, so binocular depth reads at city distances rather than only up against a building |
 | 11 | Review and repair | Failed tiles no longer freeze streaming, straight flight follows great circles over the poles, each texture is held once, level of detail is tuned in headset pixels, and the controller is read once a frame |
+| 12 | Tidy for reading | Swift-native bridge names, the frame's tile selection returned as a value, one texel-to-texture path, and head-up display marks drawn at the distance of the ground they cover. Builds and passes the tests; not yet checked by the owner on the headset |
 
 ## Where it stands
 

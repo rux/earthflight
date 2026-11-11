@@ -4,6 +4,9 @@ import MapKit
 import Observation
 import Speech
 
+/// The `+` voice teleport: one spoken utterance, MapKit's first result for it,
+/// the height of the ground there, then a destination for the scene update to
+/// take. Flight is held while a jump is under way.
 @MainActor
 @Observable
 final class JumpTo {
@@ -39,15 +42,17 @@ final class JumpTo {
         let status: String
     }
 
+    /// Only ever printed, so the case names are the messages.
     private enum JumpError: Error {
-        case permissionDenied
+        case microphoneOrSpeechPermissionDenied
         case unsupportedTranscriptionLocale
         case emptyTranscript
         case noMapResult
+        case missingAPIKey
         case elevationHTTP(Int)
         case elevationStatus(String)
         case malformedElevation
-        case timeout
+        case speechTimedOut
     }
 
     private(set) var phase: Phase = .idle
@@ -83,22 +88,20 @@ final class JumpTo {
         transcript = ""
         lastTranscriptChange = nil
         phase = .preparingSpeech
-        operationTask = Task { [weak self] in
-            guard let self else { return }
+        operationTask = Task {
             do {
-                let query = try await self.captureTranscript()
-                self.transcript = query
-                self.phase = .searching
-                let item = try await self.firstMapItem(for: query)
-                self.phase = .resolvingElevation
-                let destination = try await self.resolveDestination(from: item, query: query)
-                self.pendingDestination = destination
-                self.phase = .readyToJump
-            } catch is CancellationError {
-                self.finish()
+                let query = try await captureTranscript()
+                transcript = query
+                phase = .searching
+                let item = try await firstMapItem(for: query)
+                phase = .resolvingElevation
+                pendingDestination = try await resolveDestination(from: item, query: query)
+                phase = .readyToJump
             } catch {
-                self.report(error)
-                self.finish()
+                if !(error is CancellationError) {
+                    print("Jump To failed: \(error)")
+                }
+                finish()
             }
         }
     }
@@ -141,11 +144,9 @@ final class JumpTo {
     }
 
     private func captureTranscript() async throws -> String {
-        guard await AVCaptureDevice.requestAccess(for: .audio) else {
-            throw JumpError.permissionDenied
-        }
-        guard await Self.speechAuthorizationStatus() == .authorized else {
-            throw JumpError.permissionDenied
+        guard await AVCaptureDevice.requestAccess(for: .audio),
+              await Self.speechAuthorizationStatus() == .authorized else {
+            throw JumpError.microphoneOrSpeechPermissionDenied
         }
 
         let preferredLocale = Locale(identifier: "en-GB")
@@ -227,7 +228,7 @@ final class JumpTo {
             group.addTask { try await self.transcriptAfterSilence() }
             group.addTask {
                 try await Task.sleep(for: .seconds(8))
-                throw JumpError.timeout
+                throw JumpError.speechTimedOut
             }
             defer { group.cancelAll() }
             guard let result = try await group.next() else { throw JumpError.emptyTranscript }
@@ -296,19 +297,20 @@ final class JumpTo {
 
     private func resolveDestination(from item: MKMapItem, query: String) async throws -> Destination {
         let coordinate = item.location.coordinate
-        let elevation = try await elevationAt(
+        // Google gives the ground's height above mean sea level; the craft
+        // flies in heights above the ellipsoid. The geoid is the difference.
+        let elevation = try await elevationAboveSeaLevel(
             latitudeDegrees: coordinate.latitude,
             longitudeDegrees: coordinate.longitude
         )
-        let egm96 = CesiumBridge.egm96HeightAboveWGS84Ellipsoid(
-            atLongitudeDegrees: coordinate.longitude,
+        let geoidHeight = CesiumBridge.egm96GeoidHeightMeters(
+            longitudeDegrees: coordinate.longitude,
             latitudeDegrees: coordinate.latitude
         )
-        let groundEllipsoid = elevation + egm96
         return Destination(
             longitudeDegrees: coordinate.longitude,
             latitudeDegrees: coordinate.latitude,
-            groundEllipsoidHeightMeters: groundEllipsoid,
+            groundEllipsoidHeightMeters: elevation + geoidHeight,
             place: Place(
                 name: item.name ?? query,
                 context: item.addressRepresentations?.cityWithContext
@@ -316,9 +318,12 @@ final class JumpTo {
         )
     }
 
-    private func elevationAt(latitudeDegrees: Double, longitudeDegrees: Double) async throws -> Double {
-        guard let apiKey = Bundle.main.object(forInfoDictionaryKey: "GoogleMapsAPIKey") as? String,
-              !apiKey.isEmpty else { throw JumpError.malformedElevation }
+    private func elevationAboveSeaLevel(
+        latitudeDegrees: Double,
+        longitudeDegrees: Double
+    ) async throws -> Double {
+        let apiKey = Bundle.main.googleMapsAPIKey
+        guard !apiKey.isEmpty else { throw JumpError.missingAPIKey }
         var components = URLComponents(string: "https://maps.googleapis.com/maps/api/elevation/json")!
         components.queryItems = [
             URLQueryItem(name: "locations", value: "\(latitudeDegrees),\(longitudeDegrees)"),
@@ -333,17 +338,6 @@ final class JumpTo {
             throw JumpError.malformedElevation
         }
         return elevation
-    }
-
-    private func report(_ error: Error) {
-        switch error {
-        case JumpError.elevationHTTP(let status): print("Jump elevation HTTP status \(status)")
-        case JumpError.elevationStatus(let status): print("Jump elevation API status \(status)")
-        case JumpError.permissionDenied: print("Jump speech or microphone permission denied")
-        case JumpError.unsupportedTranscriptionLocale: print("Jump speech transcriber has no supported locale")
-        case JumpError.timeout: print("Jump speech timed out")
-        default: print("Jump failed: \(error.localizedDescription)")
-        }
     }
 
     private func finish() {

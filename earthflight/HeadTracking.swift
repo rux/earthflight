@@ -2,6 +2,8 @@ import ARKit
 import QuartzCore
 import simd
 
+/// Where the wearer's head is in the immersive world. The head owns the view
+/// and nothing else: this never steers the craft.
 @MainActor
 final class HeadTracking {
     private let session = ARKitSession()
@@ -33,16 +35,16 @@ final class HeadTracking {
         lastValidWorldFromHead = nil
     }
 
+    /// The head's pose now, or the last one tracked while tracking has dropped
+    /// out, or nil before there has been one.
     func currentWorldFromHead() -> simd_float4x4? {
         // ARKit's originFromAnchorTransform is world/origin-from-device in metres,
         // with the same immersive-world coordinate convention RealityKit uses.
-        guard worldTracking.state == .running,
-              let deviceAnchor = worldTracking.queryDeviceAnchor(atTimestamp: CACurrentMediaTime()),
-              deviceAnchor.isTracked else {
-            return lastValidWorldFromHead
+        if worldTracking.state == .running,
+           let deviceAnchor = worldTracking.queryDeviceAnchor(atTimestamp: CACurrentMediaTime()),
+           deviceAnchor.isTracked {
+            lastValidWorldFromHead = deviceAnchor.originFromAnchorTransform
         }
-
-        lastValidWorldFromHead = deviceAnchor.originFromAnchorTransform
         return lastValidWorldFromHead
     }
 }

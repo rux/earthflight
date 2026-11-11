@@ -12,26 +12,23 @@ struct EarthflightTests {
     func altitudeAndBoostSpeed() {
         let lowAltitude = FlightState()
         lowAltitude.advance(input: FlightInput(leftStick: [0, 1]), deltaTime: 0.1)
-        let lowAltitudeDistance = simd_length(lowAltitude.position - SIMD3<Float>(0, 1.5, 0))
+        let lowAltitudeDistance = simd_length(lowAltitude.renderLocalPosition - SIMD3(0, 1.5, 0))
 
         let highAltitude = FlightState()
         for _ in 0..<100 {
             highAltitude.advance(input: FlightInput(vertical: 1), deltaTime: 0.1)
         }
-        let highStart = highAltitude.position
+        let highStart = highAltitude.renderLocalPosition
         highAltitude.advance(input: FlightInput(leftStick: [0, 1]), deltaTime: 0.1)
-        let highAltitudeDistance = simd_length(highAltitude.position - highStart)
+        let highAltitudeDistance = simd_length(highAltitude.renderLocalPosition - highStart)
 
         let boosted = FlightState()
         boosted.advance(input: FlightInput(leftStick: [0, 1], isBoosting: true), deltaTime: 0.1)
-        let boostedDistance = simd_length(boosted.position - SIMD3<Float>(0, 1.5, 0))
+        let boostedDistance = simd_length(boosted.renderLocalPosition - SIMD3(0, 1.5, 0))
 
         #expect(highAltitudeDistance > lowAltitudeDistance)
         #expect(
-            abs(
-                boostedDistance -
-                    lowAltitudeDistance * Float(EarthflightTuning.boostMultiplier)
-            ) < 0.0001
+            abs(boostedDistance - lowAltitudeDistance * EarthflightTuning.boostMultiplier) < 0.0001
         )
     }
 
@@ -148,8 +145,8 @@ struct EarthflightTests {
     func steeringAloneDoesNotMoveTheCraft() {
         let flightState = FlightState()
         let ecefAtRest = flightState.craftEcefPosition
-        let longitudeAtRest = flightState.longitudeDegrees
-        let latitudeAtRest = flightState.latitudeDegrees
+        let longitudeAtRest = flightState.cartographic.longitudeDegrees
+        let latitudeAtRest = flightState.cartographic.latitudeDegrees
         let heightAtRest = flightState.ellipsoidHeightMeters
 
         // Yaw, pitch and roll must still work while the craft holds its position.
@@ -159,8 +156,8 @@ struct EarthflightTests {
             // Exact, not near: a zero displacement skips the ECEF ->
             // cartographic -> ECEF round trip that would otherwise creep.
             #expect(flightState.craftEcefPosition == ecefAtRest)
-            #expect(flightState.longitudeDegrees == longitudeAtRest)
-            #expect(flightState.latitudeDegrees == latitudeAtRest)
+            #expect(flightState.cartographic.longitudeDegrees == longitudeAtRest)
+            #expect(flightState.cartographic.latitudeDegrees == latitudeAtRest)
             #expect(flightState.ellipsoidHeightMeters == heightAtRest)
         }
         #expect(flightState.orientation.act(SIMD3<Float>(0, 0, -1)).x != 0)
@@ -271,7 +268,7 @@ struct EarthflightTests {
     @Test("Cesium Native converts the WGS84 equator to ECEF")
     func cesiumNativeSmokeTest() {
         let ecef = CesiumBridge.ecefPosition(
-            withLongitudeDegrees: 0,
+            longitudeDegrees: 0,
             latitudeDegrees: 0,
             ellipsoidHeightMeters: 0
         )
@@ -281,14 +278,14 @@ struct EarthflightTests {
     @Test("Cesium Native round-trips a real WGS84 location through ECEF")
     func cesiumNativeCartographicRoundTrip() {
         let ecef = CesiumBridge.ecefPosition(
-            withLongitudeDegrees: -0.1278,
+            longitudeDegrees: -0.1278,
             latitudeDegrees: 51.5074,
             ellipsoidHeightMeters: 100
         )
-        let recovered = CesiumBridge.cartographicDegrees(fromEcefPosition: ecef)
-        #expect(abs(recovered.x - -0.1278) < 1e-10)
-        #expect(abs(recovered.y - 51.5074) < 1e-10)
-        #expect(abs(recovered.z - 100) < 0.001)
+        let recovered = CesiumBridge.cartographic(ecefPosition: ecef)
+        #expect(abs(recovered.longitudeDegrees - -0.1278) < 1e-10)
+        #expect(abs(recovered.latitudeDegrees - 51.5074) < 1e-10)
+        #expect(abs(recovered.ellipsoidHeightMeters - 100) < 0.001)
     }
 
     @Test("Google child URLs preserve their session and receive the API key once")
@@ -321,11 +318,11 @@ struct EarthflightTests {
         let longitude = -0.1278 * Double.pi / 180
         let latitude = 51.5074 * Double.pi / 180
         let origin = CesiumBridge.ecefPosition(
-            withLongitudeDegrees: -0.1278,
+            longitudeDegrees: -0.1278,
             latitudeDegrees: 51.5074,
             ellipsoidHeightMeters: 1_000
         )
-        let ecefFromLocal = CesiumBridge.ecefFromLocalHorizontal(atEcefPosition: origin)
+        let ecefFromLocal = CesiumBridge.ecefFromLocalHorizontal(origin: origin)
         let east = SIMD3<Double>(-sin(longitude), cos(longitude), 0)
         let up = SIMD3<Double>(
             cos(latitude) * cos(longitude),
@@ -346,25 +343,25 @@ struct EarthflightTests {
     @Test("Floating-origin changes preserve represented craft and anchored geometry")
     @MainActor
     func floatingOriginInvariance() {
-        let craftEcefPosition = FlightState.ecefPosition(
+        let craftEcefPosition = CesiumBridge.ecefPosition(
             longitudeDegrees: 0.35,
             latitudeDegrees: 51.7,
             ellipsoidHeightMeters: 1_250
         )
-        let objectEcefPosition = FlightState.ecefPosition(
+        let objectEcefPosition = CesiumBridge.ecefPosition(
             longitudeDegrees: 0.351,
             latitudeDegrees: 51.701,
             ellipsoidHeightMeters: 320
         )
-        let renderFrameA = EarthflightLocalFrame(
-            originEcef: FlightState.ecefPosition(
+        let renderFrameA = TangentFrame(
+            originEcef: CesiumBridge.ecefPosition(
                 longitudeDegrees: -0.1278,
                 latitudeDegrees: 51.5074,
                 ellipsoidHeightMeters: 120
             )
         )
-        let renderFrameB = EarthflightLocalFrame(originEcef: craftEcefPosition)
-        let ecefFromCraft = EarthflightLocalFrame(originEcef: craftEcefPosition).ecefFromLocal
+        let renderFrameB = TangentFrame(originEcef: craftEcefPosition)
+        let ecefFromCraft = TangentFrame(originEcef: craftEcefPosition).ecefFromLocal
         let renderLocalFromCraftA = renderFrameA.localFromEcef * ecefFromCraft
         let renderLocalFromCraftB = renderFrameB.localFromEcef * ecefFromCraft
         var worldFromCraftAtLaunch = matrix_identity_double4x4
@@ -407,12 +404,12 @@ struct EarthflightTests {
         ]
 
         for (longitude, latitude, height) in representativePositions {
-            let ecef = FlightState.ecefPosition(
+            let ecef = CesiumBridge.ecefPosition(
                 longitudeDegrees: longitude,
                 latitudeDegrees: latitude,
                 ellipsoidHeightMeters: height
             )
-            let frame = EarthflightLocalFrame(originEcef: ecef)
+            let frame = TangentFrame(originEcef: ecef)
             let localPoint = SIMD4<Double>(1_234.5, -67.0, 8_901.25, 1)
             let roundTripped = frame.localFromEcef * (frame.ecefFromLocal * localPoint)
             let x = SIMD3<Double>(frame.ecefFromLocal.columns.0.x,
@@ -452,8 +449,8 @@ struct EarthflightTests {
         for _ in 0..<1_000 {
             highLatitudeFlight.advance(input: FlightInput(leftStick: [0.6, 1]), deltaTime: 0.1)
         }
-        #expect(highLatitudeFlight.longitudeDegrees.isFinite)
-        #expect(highLatitudeFlight.latitudeDegrees.isFinite)
+        #expect(highLatitudeFlight.cartographic.longitudeDegrees.isFinite)
+        #expect(highLatitudeFlight.cartographic.latitudeDegrees.isFinite)
         #expect(abs(highLatitudeFlight.ellipsoidHeightMeters - 800) < 0.01)
 
         let antimeridianFlight = FlightState(
@@ -464,10 +461,10 @@ struct EarthflightTests {
         for _ in 0..<100 {
             antimeridianFlight.advance(input: FlightInput(leftStick: [1, 0]), deltaTime: 0.1)
         }
-        #expect(antimeridianFlight.longitudeDegrees >= -180)
-        #expect(antimeridianFlight.longitudeDegrees <= 180)
-        #expect(antimeridianFlight.longitudeDegrees < -179)
-        #expect(antimeridianFlight.latitudeDegrees.isFinite)
+        #expect(antimeridianFlight.cartographic.longitudeDegrees >= -180)
+        #expect(antimeridianFlight.cartographic.longitudeDegrees <= 180)
+        #expect(antimeridianFlight.cartographic.longitudeDegrees < -179)
+        #expect(antimeridianFlight.cartographic.latitudeDegrees.isFinite)
         #expect(antimeridianFlight.ellipsoidHeightMeters.isFinite)
 
         let verticalFlight = FlightState()
@@ -557,17 +554,14 @@ struct EarthflightTests {
     @Test("glTF texture transforms are applied before RealityKit's V conversion")
     func gltfTextureCoordinateConversion() {
         let converted = CesiumBridge.realityKitTextureCoordinateForTesting(
-            withU: 0.2,
-            v: 0.4,
-            offsetU: 0.3,
-            offsetV: 0.4,
-            scaleU: 0.5,
-            scaleV: 0.25,
+            uv: [0.2, 0.4],
+            offset: [0.3, 0.4],
+            scale: [0.5, 0.25],
             rotation: .pi / 2
         )
 
-        #expect(abs(converted[0].doubleValue - 0.4) < 0.000001)
-        #expect(abs(converted[1].doubleValue - 0.7) < 0.000001)
+        #expect(abs(converted.x - 0.4) < 0.000001)
+        #expect(abs(converted.y - 0.7) < 0.000001)
     }
 
     @Test("Jump To starts with no visible status content")
@@ -582,10 +576,7 @@ struct EarthflightTests {
 
     @Test("Bundled EGM96 grid converts mean sea level ground heights")
     func egm96DatumConversion() {
-        let egm96 = CesiumBridge.egm96HeightAboveWGS84Ellipsoid(
-            atLongitudeDegrees: 0,
-            latitudeDegrees: 0
-        )
+        let egm96 = CesiumBridge.egm96GeoidHeightMeters(longitudeDegrees: 0, latitudeDegrees: 0)
         #expect(abs(egm96 - 17.16) < 0.1)
     }
 
@@ -610,15 +601,15 @@ struct EarthflightTests {
             heightAboveGroundMeters: EarthflightTuning.jumpHeightAboveGroundMeters
         )
 
-        #expect(abs(flightState.longitudeDegrees - 139.6917) < 1e-8)
-        #expect(abs(flightState.latitudeDegrees - 35.6895) < 1e-8)
+        #expect(abs(flightState.cartographic.longitudeDegrees - 139.6917) < 1e-8)
+        #expect(abs(flightState.cartographic.latitudeDegrees - 35.6895) < 1e-8)
         let expectedDestinationHeight =
             groundEllipsoidHeightMeters + EarthflightTuning.jumpHeightAboveGroundMeters
         #expect(abs(flightState.ellipsoidHeightMeters - expectedDestinationHeight) < 1e-5)
-        let cartographic = CesiumBridge.cartographicDegrees(fromEcefPosition: flightState.craftEcefPosition)
-        #expect(abs(cartographic.x - 139.6917) < 1e-8)
-        #expect(abs(cartographic.y - 35.6895) < 1e-8)
-        #expect(abs(cartographic.z - expectedDestinationHeight) < 1e-5)
+        let cartographic = CesiumBridge.cartographic(ecefPosition: flightState.craftEcefPosition)
+        #expect(abs(cartographic.longitudeDegrees - 139.6917) < 1e-8)
+        #expect(abs(cartographic.latitudeDegrees - 35.6895) < 1e-8)
+        #expect(abs(cartographic.ellipsoidHeightMeters - expectedDestinationHeight) < 1e-5)
         #expect(flightState.originDistanceMeters < 0.001)
         #expect(
             abs(
@@ -779,8 +770,8 @@ struct EarthflightTests {
         }
 
         #expect(flightState.ellipsoidHeightMeters.isFinite)
-        #expect(flightState.longitudeDegrees.isFinite)
-        #expect(flightState.latitudeDegrees.isFinite)
+        #expect(flightState.cartographic.longitudeDegrees.isFinite)
+        #expect(flightState.cartographic.latitudeDegrees.isFinite)
         #expect(flightState.craftEcefPosition.x.isFinite)
         // It really did climb, and it really did stop.
         #expect(flightState.ellipsoidHeightMeters > 100_000_000)
@@ -886,15 +877,15 @@ struct EarthflightTests {
         // direction has to land on the same direction on the Earth from any
         // frame. Getting the rotation inverted here would pop the sky instead.
         let frames = [
-            EarthflightLocalFrame(
-                originEcef: FlightState.ecefPosition(
+            TangentFrame(
+                originEcef: CesiumBridge.ecefPosition(
                     longitudeDegrees: -0.1278,
                     latitudeDegrees: 51.5074,
                     ellipsoidHeightMeters: 120
                 )
             ),
-            EarthflightLocalFrame(
-                originEcef: FlightState.ecefPosition(
+            TangentFrame(
+                originEcef: CesiumBridge.ecefPosition(
                     longitudeDegrees: 139.6917,
                     latitudeDegrees: 35.6895,
                     ellipsoidHeightMeters: 400_000
@@ -923,13 +914,13 @@ struct EarthflightTests {
         // just before the next rebase fires. The render-local frame's own axes
         // differ between the two, but the craft's true geodetic up does not,
         // and neither should the sky's zenith axis or an Earth-anchored star.
-        let craftEcef = FlightState.ecefPosition(
+        let craftEcef = CesiumBridge.ecefPosition(
             longitudeDegrees: -0.1278,
             latitudeDegrees: 51.5074,
             ellipsoidHeightMeters: 5_000
         )
-        let craftTangent = EarthflightLocalFrame(originEcef: craftEcef)
-        let farOriginEcef = FlightState.ecefPosition(
+        let craftTangent = TangentFrame(originEcef: craftEcef)
+        let farOriginEcef = CesiumBridge.ecefPosition(
             longitudeDegrees: -0.1278,
             latitudeDegrees: 51.0,
             ellipsoidHeightMeters: 5_000
@@ -937,8 +928,8 @@ struct EarthflightTests {
         #expect(simd_length(farOriginEcef - craftEcef) > 45_000)
         #expect(simd_length(farOriginEcef - craftEcef) < 65_000)
         let frames = [
-            EarthflightLocalFrame(originEcef: craftEcef),
-            EarthflightLocalFrame(originEcef: farOriginEcef)
+            TangentFrame(originEcef: craftEcef),
+            TangentFrame(originEcef: farOriginEcef)
         ]
 
         let expectedUpInEcef = SIMD3<Float>(
@@ -1044,6 +1035,32 @@ struct EarthflightTests {
         let axes = [clampedBar.act(SIMD3<Float>(1, 0, 0)), clampedBar.act(SIMD3<Float>(0, 1, 0))]
         #expect(axes.allSatisfy { abs(simd_length($0) - 1) < 1e-5 })
         #expect(abs(simd_dot(axes[0], axes[1])) < 1e-5)
+
+        // Each mark is drawn as far away as the ground it covers. Straight down
+        // that is the height; level, or anywhere above the horizon, it is the
+        // horizon, and the two meet where the nose grazes it, so the ring
+        // never jumps in depth as the nose comes up.
+        let height = 1_000.0
+        let earthRadius = SkyAtmosphere.earthRadiusMeters
+        let horizon = (height * (2 * earthRadius + height)).squareRoot()
+        let distance = { (sineOfElevation: Double) in
+            HeadUpDisplay.groundDistanceMeters(heightMeters: height, sineOfElevation: sineOfElevation)
+        }
+        #expect(abs(distance(-1) - height) < 1e-6)
+        #expect(abs(distance(0) - horizon) < 1e-6)
+        #expect(distance(0.5) == distance(0))
+        // Thirty degrees down over ground this flat is twice the height away.
+        #expect(abs(distance(-0.5) - 2 * height) < 1)
+        let grazing = -horizon / (earthRadius + height)
+        #expect(abs(distance(grazing - 1e-9) - horizon) < horizon / 1_000)
+        var previous = distance(grazing)
+        for step in 1...100 {
+            let steeper = distance(grazing + (-1 - grazing) * Double(step) / 100)
+            #expect(steeper < previous)
+            previous = steeper
+        }
+        // At or below the ground there is still an answer, and it is close.
+        #expect(abs(HeadUpDisplay.groundDistanceMeters(heightMeters: -50, sineOfElevation: -1) - 1) < 1e-6)
     }
 
     @Test("The head-up display builds both marks as real RealityKit geometry")

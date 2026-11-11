@@ -313,36 +313,13 @@ nonisolated enum SkyGradient {
         UInt8(clamping: Int((scaledComponent + noise).rounded()))
     }
 
-    /// sRGB, and no mipmaps: the dome is always magnified, one row covering
-    /// about a twentieth of a degree, so mipmaps would only cost time, blur the
-    /// thin limb and average the dither away.
     static func image(pixels: [UInt8], rowCount: Int) -> CGImage {
-        let provider = CGDataProvider(data: Data(pixels) as CFData)!
-        return CGImage(
-            width: textureWidth,
-            height: rowCount,
-            bitsPerComponent: 8,
-            bitsPerPixel: 32,
-            bytesPerRow: textureWidth * 4,
-            space: CGColorSpace(name: CGColorSpace.sRGB)!,
-            bitmapInfo: [
-                .byteOrder32Big,
-                CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue)
-            ],
-            provider: provider,
-            decode: nil,
-            shouldInterpolate: true,
-            intent: .defaultIntent
-        )!
+        .rgba8(Data(pixels), width: textureWidth, height: rowCount, alpha: .noneSkipLast)
     }
 
-    static func image(heightMeters: Double, rowCount: Int) -> CGImage {
-        image(
-            pixels: pixels(heightMeters: heightMeters, rowCount: rowCount),
-            rowCount: rowCount
-        )
-    }
-
+    /// No mipmaps: the dome is always magnified, one row covering about a
+    /// twentieth of a degree, so mipmaps would only cost time, blur the thin
+    /// limb and average the dither away.
     static let textureCreateOptions = TextureResource.CreateOptions(
         semantic: .color,
         mipmapsMode: .none
@@ -364,10 +341,11 @@ final class SkyDome {
     init(ellipsoidHeightMeters: Double) async {
         starField = await StarField()
         builtHeightMeters = ellipsoidHeightMeters
+        let rowCount = EarthflightTuning.skyGradientRowCount
         texture = try! await TextureResource(
             image: SkyGradient.image(
-                heightMeters: ellipsoidHeightMeters,
-                rowCount: EarthflightTuning.skyGradientRowCount
+                pixels: SkyGradient.pixels(heightMeters: ellipsoidHeightMeters, rowCount: rowCount),
+                rowCount: rowCount
             ),
             withName: "EarthflightSkyGradient",
             options: SkyGradient.textureCreateOptions

@@ -13,6 +13,6 @@ These instructions assume a Nintendo Switch Pro controller, but will work for Xb
  - Shoulder triggers, top and bottom, will raise/lower altitude
  - Clicking the right thumbstick resets your horizon
  - Pressing up and down on the left d-pad will change the size of everything (ever wanted to be a giant?)
- - Pressing the + button on the right will let you speak, and teleport to where it things you said
+ - Pressing the + button on the right will let you speak, and teleport to where it thinks you said
  - Pressing the - button on the left will cycle the HUD view
  - Pressing the Home button will exit.

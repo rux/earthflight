@@ -41,10 +41,7 @@ final class GiantMode {
     var worldScale: Double { exp2(-currentDoublings) }
 
     func grow() {
-        targetDoublings = min(
-            targetDoublings + 1,
-            EarthflightTuning.maximumGiantDoublings
-        )
+        targetDoublings = min(targetDoublings + 1, EarthflightTuning.maximumGiantDoublings)
     }
 
     func shrink() {
@@ -58,22 +55,16 @@ final class GiantMode {
     func advance(deltaTime: TimeInterval) {
         let target = Double(targetDoublings)
         let duration = EarthflightTuning.giantSizeTransitionSeconds
-        guard duration > 0 else {
-            // Zero disables the ramp entirely, as the release decays do.
-            currentDoublings = target
-            return
-        }
+        // Zero disables the ramp entirely, as the release decays do.
+        let step = duration > 0 ? deltaTime / duration : .infinity
 
         // Arriving exactly on the target, rather than adding a last remainder
         // to a float, is what keeps a settled level an exact power of two and
         // the baseline exactly 1. It also means a long frame cannot overshoot.
-        let step = deltaTime / duration
         if abs(target - currentDoublings) <= step {
             currentDoublings = target
-        } else if target > currentDoublings {
-            currentDoublings += step
         } else {
-            currentDoublings -= step
+            currentDoublings += target > currentDoublings ? step : -step
         }
     }
 }

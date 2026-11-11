@@ -125,7 +125,7 @@ final class StarField {
     /// a few pixels across.
     private static func makeDotTexture() async -> TextureResource {
         let size = 32
-        var pixels = [UInt8](repeating: 0, count: size * size * 4)
+        var texels = Data(capacity: size * size * 4)
         for row in 0..<size {
             for column in 0..<size {
                 let x = (Double(column) + 0.5) / Double(size) * 2 - 1
@@ -134,32 +134,11 @@ final class StarField {
                 let shoulder = min(max((distance - 0.7) / 0.3, 0), 1)
                 let value = 1 - shoulder * shoulder * (3 - 2 * shoulder)
                 let level = UInt8(clamping: Int((value * 255).rounded()))
-                let offset = (row * size + column) * 4
-                pixels[offset] = level
-                pixels[offset + 1] = level
-                pixels[offset + 2] = level
-                pixels[offset + 3] = level
+                texels.append(contentsOf: repeatElement(level, count: 4))
             }
         }
-        let provider = CGDataProvider(data: Data(pixels) as CFData)!
-        let image = CGImage(
-            width: size,
-            height: size,
-            bitsPerComponent: 8,
-            bitsPerPixel: 32,
-            bytesPerRow: size * 4,
-            space: CGColorSpace(name: CGColorSpace.sRGB)!,
-            bitmapInfo: [
-                .byteOrder32Big,
-                CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
-            ],
-            provider: provider,
-            decode: nil,
-            shouldInterpolate: true,
-            intent: .defaultIntent
-        )!
         return try! await TextureResource(
-            image: image,
+            image: .rgba8(texels, width: size, height: size, alpha: .premultipliedLast),
             withName: "EarthflightStarDot",
             options: TextureResource.CreateOptions(
                 semantic: PhysicallyBasedMaterial.Opacity.textureSemantic
@@ -167,14 +146,20 @@ final class StarField {
         )
     }
 
+    /// The quads of one bank, as the buffers of its mesh.
+    private struct Quads {
+        var positions: [SIMD3<Float>] = []
+        var textureCoordinates: [SIMD2<Float>] = []
+        var indices: [UInt32] = []
+    }
+
     private static func makeBanks(dotTexture: TextureResource) -> [ModelEntity] {
-        let bankCount = EarthflightTuning.starTwinklePeriodsSeconds.count
         // A fixed seed, so the same sky comes back every launch.
         var random = StarRandom(seed: 0x5ea5_7a25_0ea1_7455)
-        var positions = [[SIMD3<Float>]](repeating: [], count: bankCount)
-        var normals = [[SIMD3<Float>]](repeating: [], count: bankCount)
-        var textureCoordinates = [[SIMD2<Float>]](repeating: [], count: bankCount)
-        var indices = [[UInt32]](repeating: [], count: bankCount)
+        var banks = [Quads](
+            repeating: Quads(),
+            count: EarthflightTuning.starTwinklePeriodsSeconds.count
+        )
         let radius = EarthflightTuning.skyDomeRadiusMeters
 
         for star in 0..<EarthflightTuning.starCount {
@@ -201,21 +186,20 @@ final class StarField {
             // Each quad lies tangent to the sphere, so it always faces the craft
             // at the centre without a billboard component per star.
             let reference: SIMD3<Float> = abs(direction.y) < 0.9 ? [0, 1, 0] : [1, 0, 0]
-            let right = simd_normalize(simd_cross(reference, direction))
-            let up = simd_cross(direction, right)
+            let halfRight = simd_normalize(simd_cross(reference, direction)) * halfSize
+            let halfUp = simd_cross(direction, halfRight)
             let centre = direction * radius
 
-            let bank = star % bankCount
-            let base = UInt32(positions[bank].count)
-            positions[bank].append(contentsOf: [
-                centre - right * halfSize - up * halfSize,
-                centre + right * halfSize - up * halfSize,
-                centre + right * halfSize + up * halfSize,
-                centre - right * halfSize + up * halfSize
-            ])
-            normals[bank].append(contentsOf: repeatElement(-direction, count: 4))
-            textureCoordinates[bank].append(contentsOf: [[0, 0], [1, 0], [1, 1], [0, 1]])
-            indices[bank].append(contentsOf: [base, base + 1, base + 2, base, base + 2, base + 3])
+            let bank = star % banks.count
+            let base = UInt32(banks[bank].positions.count)
+            banks[bank].positions += [
+                centre - halfRight - halfUp,
+                centre + halfRight - halfUp,
+                centre + halfRight + halfUp,
+                centre - halfRight + halfUp
+            ]
+            banks[bank].textureCoordinates += [[0, 0], [1, 0], [1, 1], [0, 1]]
+            banks[bank].indices += [base, base + 1, base + 2, base, base + 2, base + 3]
         }
 
         var material = UnlitMaterial(color: .white)
@@ -223,12 +207,11 @@ final class StarField {
         // A quad that always faces the viewer needs no winding.
         material.faceCulling = .none
 
-        return (0..<bankCount).map { bank in
-            var descriptor = MeshDescriptor(name: "EarthflightStars\(bank)")
-            descriptor.positions = MeshBuffer(positions[bank])
-            descriptor.normals = MeshBuffer(normals[bank])
-            descriptor.textureCoordinates = MeshBuffer(textureCoordinates[bank])
-            descriptor.primitives = .triangles(indices[bank])
+        return banks.enumerated().map { index, quads in
+            var descriptor = MeshDescriptor(name: "EarthflightStars\(index)")
+            descriptor.positions = MeshBuffer(quads.positions)
+            descriptor.textureCoordinates = MeshBuffer(quads.textureCoordinates)
+            descriptor.primitives = .triangles(quads.indices)
             return ModelEntity(
                 mesh: try! .generate(from: [descriptor]),
                 materials: [material]

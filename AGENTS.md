@@ -119,7 +119,7 @@ blocker — and state the blocker before changing course.
 
 | File | What it holds |
 |---|---|
-| `earthflightApp.swift` | Entry point; launches straight into the immersive space |
+| `EarthflightApp.swift` | Entry point; launches straight into the immersive space |
 | `ImmersiveView.swift` | The `RealityView`, the per-frame scene update, and how everything is wired together |
 | `FlightState.swift` | Craft pose in double-precision ECEF, controller integration, floating-origin rebasing |
 | `Gamepad.swift` | GameController binding and current input state |
@@ -127,10 +127,11 @@ blocker — and state the blocker before changing course.
 | `GoogleTileRenderer.swift` | Cesium's selected tiles as RealityKit entities: preparation, publication, retirement, render frame |
 | `CesiumBridge.h` / `.mm` | The Objective-C++ boundary: hosts the Cesium tileset and decodes glTF into flat primitive payloads |
 | `MatrixPrecision.swift` | Double/Float casts between the planetary maths and RealityKit |
+| `CGImage+RGBA8.swift` | The one way texels become a RealityKit texture: tiles, sky and stars |
 | `HeadTracking.swift` | Head pose relative to the craft |
 | `SkyDome.swift` | The air-mass sky gradient and its dome |
 | `StarField.swift` | Stars, faded in by air mass |
-| `HeadUpDisplay.swift` | The nose ring, horizon bar and optional altimeter |
+| `HeadUpDisplay.swift` | The nose ring, horizon bar and optional altimeter, and how far away each is drawn |
 | `GiantMode.swift` | How large the wearer is, and therefore how small the world is |
 | `JumpTo.swift` | The `+` voice teleport: speech, MapKit, elevation, geoid correction |
 | `GoogleAttributionView.swift` | Required Google branding and current credits |

@@ -192,6 +192,23 @@ correctness depends on not compensating for it anywhere else.
 
 ---
 
+## Head-up display
+
+* The marks hang from the wearer's head position, with the craft's orientation.
+  Do not anchor them to the craft origin again: a seated wearer's eyes are some
+  30 cm below it, and at any distance near enough to matter that swings the ring
+  well off the nose.
+* Each mark's distance comes from the ground it covers and shrinks with the
+  world. A fixed distance, the original 1,000 m, puts the marks far behind the
+  ground in giant mode, where they are seen double against it.
+* The ground is a sphere at the height last measured below the craft. A true
+  ray cast down the nose was considered and not built: Cesium tests every
+  triangle of every tile the ray crosses, on the main thread, and a level ray
+  over a city crosses many. If steep relief makes the ring sit visibly off the
+  surface in giant mode, that is the next step, and it needs measuring first.
+
+---
+
 ## Attribution
 
 Google's terms, not taste:

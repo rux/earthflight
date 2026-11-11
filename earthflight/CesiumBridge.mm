@@ -217,12 +217,13 @@ NSData *_Nullable widenedIndices(
 }
 
 /// The image's full-resolution RGBA8 texels, copied for RealityKit, or nil if
-/// it is not RGBA8 or its sizes disagree. Cesium may keep generated mip levels
-/// back to back after the first; RealityKit makes its own, so only the first
-/// is wanted.
+/// it is not RGBA8, is empty or its sizes disagree. Cesium may keep generated
+/// mip levels back to back after the first; RealityKit makes its own, so only
+/// the first is wanted.
 NSData *_Nullable baseLevelRGBA8(const CesiumGltf::Image& image) {
     const CesiumImage::ImageAsset *asset = image.pAsset.get();
-    if (!asset || asset->channels != 4 || asset->bytesPerChannel != 1) return nil;
+    if (!asset || asset->channels != 4 || asset->bytesPerChannel != 1 ||
+        asset->width <= 0 || asset->height <= 0) return nil;
     size_t byteOffset = 0;
     size_t byteLength = asset->pixelData.size();
     if (!asset->mipPositions.empty()) {
@@ -296,22 +297,23 @@ CesiumPrimitivePayload *_Nullable makePayload(
     const CesiumGeospatial::LocalHorizontalCoordinateSystem primitiveFrame =
         makeRealityKitLocalFrame(anchorEcef);
 
-    NSMutableData *positionData = [NSMutableData dataWithLength:uvs.size() * sizeof(float) * 3];
-    NSMutableData *uvData = [NSMutableData dataWithLength:uvs.size() * sizeof(float) * 2];
-    float *outPositions = static_cast<float *>(positionData.mutableBytes);
-    float *outUVs = static_cast<float *>(uvData.mutableBytes);
+    // Written as simd vectors, padding included, because that is the layout of
+    // the `SIMD3<Float>` and `SIMD2<Float>` arrays RealityKit takes: Swift then
+    // copies each buffer once, on the main thread, and reshapes nothing.
+    NSMutableData *positionData = [NSMutableData dataWithLength:uvs.size() * sizeof(simd_float3)];
+    NSMutableData *uvData = [NSMutableData dataWithLength:uvs.size() * sizeof(simd_float2)];
+    simd_float3 *outPositions = static_cast<simd_float3 *>(positionData.mutableBytes);
+    simd_float2 *outUVs = static_cast<simd_float2 *>(uvData.mutableBytes);
     for (size_t i = 0; i < uvs.size(); ++i) {
         const glm::dvec3 local = primitiveFrame.ecefPositionToLocal(ecefPositions[i]);
-        outPositions[i * 3] = static_cast<float>(local.x);
-        outPositions[i * 3 + 1] = static_cast<float>(local.y);
-        outPositions[i * 3 + 2] = static_cast<float>(local.z);
+        outPositions[i] = simd_make_float3(
+            static_cast<float>(local.x), static_cast<float>(local.y), static_cast<float>(local.z));
         // KHR_texture_transform is defined in glTF's texture space, so it is
         // applied before converting to RealityKit's.
         const glm::dvec2 uv = realityKitTextureCoordinate(transformExtension
             ? textureTransform.applyTransform(uvs[i].x, uvs[i].y)
             : uvs[i]);
-        outUVs[i * 2] = static_cast<float>(uv.x);
-        outUVs[i * 2 + 1] = static_cast<float>(uv.y);
+        outUVs[i] = simd_make_float2(static_cast<float>(uv.x), static_cast<float>(uv.y));
     }
 
     CesiumPrimitivePayload *payload = [CesiumPrimitivePayload new];
@@ -601,10 +603,7 @@ struct Session {
     double horizontalFieldOfViewRadians;
     double verticalFieldOfViewRadians;
     void (^prepareTile)(uint64_t, NSArray<CesiumPrimitivePayload *> *);
-    void (^tileSelected)(uint64_t);
-    void (^selectionComplete)(void);
     void (^tileFreed)(uint64_t);
-    void (^attributionChanged)(NSString *);
 };
 
 std::optional<Session> session;
@@ -796,26 +795,26 @@ std::optional<GroundHit> nearestLoadedGroundHit(const Tile& tile, const CesiumGe
     return simdVectorFromGlm(CesiumGeospatial::Ellipsoid::WGS84.cartographicToCartesian(cartographic));
 }
 
-+ (simd_double3)cartographicDegreesFromEcefPosition:(simd_double3)ecefPosition {
++ (CesiumCartographic)cartographicOfEcefPosition:(simd_double3)ecefPosition {
     const std::optional<CesiumGeospatial::Cartographic> cartographic =
         CesiumGeospatial::Ellipsoid::WGS84.cartesianToCartographic(glmVectorFromSimd(ecefPosition));
     if (!cartographic) {
         const double nan = std::numeric_limits<double>::quiet_NaN();
-        return simd_make_double3(nan, nan, nan);
+        return {nan, nan, nan};
     }
-    return simd_make_double3(
+    return {
         glm::degrees(cartographic->longitude),
         glm::degrees(cartographic->latitude),
-        cartographic->height);
+        cartographic->height};
 }
 
-+ (simd_double4x4)ecefFromLocalHorizontalAtEcefPosition:(simd_double3)ecefPosition {
++ (simd_double4x4)ecefFromLocalHorizontalWithOrigin:(simd_double3)ecefPosition {
     return simdMatrixFromGlm(
         makeRealityKitLocalFrame(glmVectorFromSimd(ecefPosition)).getLocalToEcefTransformation());
 }
 
-+ (double)egm96HeightAboveWGS84EllipsoidAtLongitudeDegrees:(double)longitudeDegrees
-                                           latitudeDegrees:(double)latitudeDegrees {
++ (double)egm96GeoidHeightMetersAtLongitudeDegrees:(double)longitudeDegrees
+                                   latitudeDegrees:(double)latitudeDegrees {
     const double height = loadedEGM96Grid().sampleHeight(
         CesiumGeospatial::Cartographic::fromDegrees(longitudeDegrees, latitudeDegrees));
     require(std::isfinite(height), @"EGM96 returned a nonfinite height");
@@ -825,10 +824,7 @@ std::optional<GroundHit> nearestLoadedGroundHit(const Tile& tile, const CesiumGe
 + (void)startTilesWithAPIKey:(NSString *)apiKey
                     settings:(CesiumTileSelectionSettings)settings
                onPrepareTile:(void (^)(uint64_t, NSArray<CesiumPrimitivePayload *> *))onPrepareTile
-              onTileSelected:(void (^)(uint64_t))onTileSelected
-         onSelectionComplete:(void (^)(void))onSelectionComplete
-                 onTileFreed:(void (^)(uint64_t))onTileFreed
-        onAttributionChanged:(void (^)(NSString *))onAttributionChanged {
+                 onTileFreed:(void (^)(uint64_t))onTileFreed {
     require(!session, @"startTiles called while a session is already running");
     if (apiKey.length == 0) {
         NSLog(@"Google Maps API key is empty. Add it to the ignored Secrets.xcconfig.");
@@ -867,23 +863,20 @@ std::optional<GroundHit> nearestLoadedGroundHit(const Tile& tile, const CesiumGe
         .horizontalFieldOfViewRadians = glm::radians(settings.horizontalFieldOfViewDegrees),
         .verticalFieldOfViewRadians = glm::radians(settings.verticalFieldOfViewDegrees),
         .prepareTile = onPrepareTile,
-        .tileSelected = onTileSelected,
-        .selectionComplete = onSelectionComplete,
         .tileFreed = onTileFreed,
-        .attributionChanged = onAttributionChanged,
     };
 }
 
-+ (void)updateTilesWithCameraPosition:(simd_double3)ecefPosition
-                            direction:(simd_double3)ecefDirection
-                                   up:(simd_double3)ecefUp
-                            deltaTime:(double)deltaTime {
++ (nullable NSArray<NSNumber *> *)updateTilesWithCameraPosition:(simd_double3)ecefPosition
+                                                      direction:(simd_double3)ecefDirection
+                                                             up:(simd_double3)ecefUp
+                                                      deltaTime:(double)deltaTime {
     sharedAsyncSystem().dispatchMainThreadTasks();
-    if (!session) return;
+    if (!session) return nil;
 
     glm::dvec3 direction = glmVectorFromSimd(ecefDirection);
     glm::dvec3 up = glmVectorFromSimd(ecefUp);
-    if (glm::length(glm::cross(direction, up)) < 1e-9) return;
+    if (glm::length(glm::cross(direction, up)) < 1e-9) return nil;
     direction = glm::normalize(direction);
     up = glm::normalize(up - glm::dot(up, direction) * direction);
 
@@ -901,6 +894,8 @@ std::optional<GroundHit> nearestLoadedGroundHit(const Tile& tile, const CesiumGe
         {view},
         static_cast<float>(std::clamp(deltaTime, 0.0, 0.1)));
 
+    NSMutableArray<NSNumber *> *selection =
+        [NSMutableArray arrayWithCapacity:result.tilesToRenderThisFrame.size()];
     bool selectionIsComplete = true;
     for (const Tile::ConstPointer& tile : result.tilesToRenderThisFrame) {
         switch (tile->getState()) {
@@ -925,26 +920,24 @@ std::optional<GroundHit> nearestLoadedGroundHit(const Tile& tile, const CesiumGe
             selectionIsComplete = false;
             continue;
         }
-        session->tileSelected(identifier);
-    }
-    if (selectionIsComplete) {
-        session->selectionComplete();
+        [selection addObject:@(identifier)];
     }
 
     // Cesium sorts the current credits by how many visible tiles use each,
     // which is the order Google asks for.
     const CesiumUtility::CreditsSnapshot& snapshot = session->creditSystem->getSnapshot();
-    std::string attribution;
+    session->attribution.clear();
     for (const CesiumUtility::Credit& credit : snapshot.currentCredits) {
-        if (!attribution.empty()) attribution += " · ";
-        attribution += session->creditSystem->getHtml(credit);
-    }
-    if (attribution != session->attribution) {
-        session->attribution = attribution;
-        session->attributionChanged(@(attribution.c_str()));
+        if (!session->attribution.empty()) session->attribution += " · ";
+        session->attribution += session->creditSystem->getHtml(credit);
     }
 
     session->tileset->loadTiles();
+    return selectionIsComplete ? selection : nil;
+}
+
++ (NSString *)attribution {
+    return session ? @(session->attribution.c_str()) : @"";
 }
 
 + (CesiumGroundSample)groundBelowEcefPosition:(simd_double3)ecefPosition {
@@ -971,14 +964,14 @@ std::optional<GroundHit> nearestLoadedGroundHit(const Tile& tile, const CesiumGe
     return static_cast<double>(steadyClockNanoseconds() - last) / 1e9;
 }
 
-+ (void)tileDidFinishPreparing:(uint64_t)tileIdentifier succeeded:(BOOL)succeeded {
++ (void)finishPreparingTile:(uint64_t)tileIdentifier succeeded:(BOOL)succeeded {
     finishPreparation(tileIdentifier, succeeded);
 }
 
 + (void)stopTiles {
     if (!session) return;
 
-    // Settle every promise this bridge made. A `tileDidFinishPreparing` that
+    // Settle every promise this bridge made. A `finishPreparingTile` that
     // arrives later for one of these finds nothing and does nothing.
     std::unordered_map<uint64_t, PendingPreparation> abandoned;
     {
@@ -1001,20 +994,17 @@ std::optional<GroundHit> nearestLoadedGroundHit(const Tile& tile, const CesiumGe
     return @(decorateGoogleURL(url.UTF8String, apiKey).c_str());
 }
 
-+ (NSArray<NSNumber *> *)realityKitTextureCoordinateForTestingWithU:(double)u
-                                                                  v:(double)v
-                                                            offsetU:(double)offsetU
-                                                            offsetV:(double)offsetV
-                                                             scaleU:(double)scaleU
-                                                             scaleV:(double)scaleV
-                                                           rotation:(double)rotation {
++ (simd_double2)realityKitTextureCoordinateForTestingWithUV:(simd_double2)uv
+                                                     offset:(simd_double2)offset
+                                                      scale:(simd_double2)scale
+                                                   rotation:(double)rotation {
     CesiumGltf::ExtensionKhrTextureTransform extension;
-    extension.offset = {offsetU, offsetV};
-    extension.scale = {scaleU, scaleV};
+    extension.offset = {offset.x, offset.y};
+    extension.scale = {scale.x, scale.y};
     extension.rotation = rotation;
-    const glm::dvec2 transformed = CesiumGltf::KhrTextureTransform(extension).applyTransform(u, v);
-    const glm::dvec2 converted = realityKitTextureCoordinate(transformed);
-    return @[@(converted.x), @(converted.y)];
+    const glm::dvec2 converted = realityKitTextureCoordinate(
+        CesiumGltf::KhrTextureTransform(extension).applyTransform(uv.x, uv.y));
+    return simd_make_double2(converted.x, converted.y);
 }
 
 @end

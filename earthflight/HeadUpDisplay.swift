@@ -23,41 +23,55 @@ enum HeadUpDisplayMode {
 /// down and the ring goes down with it while the bar stays on the horizon; roll
 /// and the bar tilts while the ring stays where it is.
 ///
-/// Three things make this far less work than it looks.
+/// A mark has a direction and a distance, and the two are settled separately.
 ///
-///  * The craft's pose in the immersive world never changes -- `earthRoot`
-///    moves underneath it -- so "straight ahead" is a fixed world direction and
-///    the ring is a static entity. Only the bar is touched per frame.
-///  * Everything lives in the craft's own frame, so the bar needs the craft
-///    attitude and nothing else: no render frame, no floating origin, no ECEF.
-///    Heading cancels out of `horizonOrientation` exactly, which is the
-///    geometric statement of the fact that yawing does not move the horizon in
-///    the view.
-///  * The bar tracks *local horizontal*, not the true visible horizon, which
-///    dips below it by `acos(R / (R + h))`: 0.35 degrees at the launch height,
-///    1 degree at 1 km, 10 degrees at 100 km, 30 degrees at 1,000 km. Tracking
-///    the true horizon would hold the bar off the ring at startup and, higher
-///    up, draw a straight line tangent to a small round limb. Local horizontal
-///    is what an attitude indicator shows, and what "level" means here.
+///  * **Direction comes from the wearer's head.** The marks keep the craft's
+///    orientation but hang from wherever the head is, so the ring is exactly
+///    along the nose from the eyes however the wearer leans, and at any
+///    distance. That is also the right point to mark: the world streams past
+///    the wearer along the nose, so what lies along the nose *from the head* is
+///    what the wearer is flying at. Following the head costs a frame or so of
+///    tracking lag, which shows only as a slight swim of a near mark during a
+///    fast lean.
+///  * **Distance comes from the ground.** Each mark is drawn as far away as the
+///    ground it covers: the ring where the nose meets the ground, the bar at
+///    the horizon. The ground is taken as a sphere at the height last measured
+///    below the craft, which costs nothing and is exact on flat ground; on
+///    steep relief the ring can sit off the true surface. Distance changes
+///    nothing one eye can see, because the marks are sized in angles. What it
+///    sets is binocular depth, so the eyes can hold a mark and the ground
+///    behind it at once. Giant mode is where that matters: the world is at
+///    arm's length, and a mark left far away is seen double against it.
 ///
-/// The marks are placed far away and sized in angles rather than metres. The
-/// craft origin is a fixed world point but the wearer's head is not: at two
-/// metres, leaning half a metre would swing the ring 14 degrees off the very
-/// axis it exists to report. At a kilometre the same lean is 0.03 degrees and
-/// the marks are effectively collimated, as a real head-up display is. They
-/// also ignore depth, so terrain never buries them.
+/// Both distances shrink with the world in giant mode, like the ground itself.
 ///
-/// The altimeter is a third, optional mark: a small reading of the height above
-/// the measured ground, parented to the bar so it rides on the end of its right
-/// arm through pitch and roll.
+/// Everything lives in the craft's own frame, so the marks need the craft's
+/// attitude and nothing else: no render frame, no floating origin, no ECEF.
+/// Heading cancels out of `horizonOrientation` exactly, which is the geometric
+/// statement of the fact that yawing does not move the horizon in the view.
+///
+/// The bar tracks *local horizontal*, not the true visible horizon, which dips
+/// below it by `acos(R / (R + h))`: 0.35 degrees at the launch height, 1 degree
+/// at 1 km, 10 degrees at 100 km, 30 degrees at 1,000 km. Tracking the true
+/// horizon would hold the bar off the ring at startup and, higher up, draw a
+/// straight line tangent to a small round limb. Local horizontal is what an
+/// attitude indicator shows, and what "level" means here.
+///
+/// The marks ignore depth, so terrain never buries them. The altimeter is a
+/// third, optional mark: a small reading of the height above the measured
+/// ground, parented to the bar so it rides on the end of its right arm through
+/// pitch and roll.
 @MainActor
 final class HeadUpDisplay {
     /// Parent of both marks, placed once at the craft's fixed pose in the
     /// immersive world. Enable or disable it to show or hide the whole display.
     let entity = Entity()
 
+    // Both meshes are built one metre from their entity's origin, so an
+    // entity's scale is its mark's distance in metres.
+    private let ring: ModelEntity
     private let horizonBar: ModelEntity
-    /// Placed at the outer end of the right arm, turned to face the craft.
+    /// Placed at the outer end of the right arm, turned to face the wearer.
     private let altimeter = Entity()
     /// Offset within `altimeter` so the text's right edge meets the arm's end.
     private let altimeterText = ModelEntity()
@@ -67,34 +81,26 @@ final class HeadUpDisplay {
     private var shownAltimeterReading = ""
 
     init() {
-        let distance = EarthflightTuning.headUpDisplayDistanceMeters
         let material = Self.material()
-        let circle = ModelEntity(
-            mesh: Self.circleMesh(distanceMeters: distance),
-            materials: [material]
-        )
-        circle.position = [0, 0, -distance]
-        horizonBar = ModelEntity(
-            mesh: Self.horizonBarMesh(distanceMeters: distance),
-            materials: [material]
-        )
+        ring = ModelEntity(mesh: Self.ringMesh(), materials: [material])
+        horizonBar = ModelEntity(mesh: Self.horizonBarMesh(), materials: [material])
         // The text is a closed extruded solid. With no depth test its back face
         // would blend over its front and double the opacity, so cull it.
         var textMaterial = material
         textMaterial.faceCulling = .back
         altimeterMaterial = textMaterial
 
-        entity.addChild(circle)
+        entity.addChild(ring)
         entity.addChild(horizonBar)
 
         // A point on the same horizontal arc as the arm, so it stays on the
         // horizon. Rotating local +Z by minus the arc angle points it back at
-        // the craft, which is the way the text's front face looks.
+        // the wearer, which is the way the text's front face looks.
         let armEndAngle = Float(
             (Self.horizonBarGapHalfAngleDegrees + EarthflightTuning.headUpDisplayHorizonBarArmLengthDegrees) *
                 .pi / 180
         )
-        altimeter.position = [distance * sin(armEndAngle), 0, -distance * cos(armEndAngle)]
+        altimeter.position = [sin(armEndAngle), 0, -cos(armEndAngle)]
         altimeter.orientation = simd_quatf(angle: -armEndAngle, axis: [0, 1, 0])
         altimeter.isEnabled = false
         altimeter.addChild(altimeterText)
@@ -112,12 +118,20 @@ final class HeadUpDisplay {
         secondsUntilAltimeterRefresh = 0
     }
 
+    /// `groundDistanceHeightMeters` places the marks and should change
+    /// smoothly; `altimeterHeightMeters` is the reading. `headWorldPosition` is
+    /// nil until the head has been tracked, and the craft's own position then
+    /// stands in for it.
+    ///
     /// The Jump To card is billboarded at the same azimuth a metre and a quarter
     /// ahead, and the marks ignore depth, so they would otherwise be drawn over
     /// its text. Hiding them while it is up is simpler than sorting them.
     func update(
         craftOrientation: simd_quatf,
-        heightAboveGroundMeters: Double,
+        groundDistanceHeightMeters: Double,
+        altimeterHeightMeters: Double,
+        headWorldPosition: SIMD3<Float>?,
+        worldScale: Double,
         isJumpToCardShown: Bool,
         deltaTime: TimeInterval
     ) {
@@ -126,9 +140,24 @@ final class HeadUpDisplay {
             return
         }
 
-        horizonBar.orientation = Self.horizonOrientation(
-            craftOrientation: craftOrientation
+        // Geodetic up in the craft's axes, where the nose is -Z. The head is
+        // in room metres, which are `1 / worldScale` world metres each.
+        let up = craftOrientation.inverse.act(SIMD3<Float>(0, 1, 0))
+        let head = headWorldPosition.map { entity.convert(position: $0, from: nil) } ?? .zero
+        let headHeightMeters = groundDistanceHeightMeters + Double(simd_dot(head, up)) / worldScale
+        let noseDistance = worldScale * Self.groundDistanceMeters(
+            heightMeters: headHeightMeters,
+            sineOfElevation: Double(-up.z)
         )
+        let horizonDistance = worldScale * Self.groundDistanceMeters(
+            heightMeters: headHeightMeters,
+            sineOfElevation: 0
+        )
+        ring.position = head
+        ring.scale = .init(repeating: Float(noseDistance))
+        horizonBar.position = head
+        horizonBar.scale = .init(repeating: Float(horizonDistance))
+        horizonBar.orientation = Self.horizonOrientation(craftOrientation: craftOrientation)
 
         altimeter.isEnabled = mode == .marksAndAltimeter
         guard altimeter.isEnabled else {
@@ -139,11 +168,36 @@ final class HeadUpDisplay {
             return
         }
         secondsUntilAltimeterRefresh = EarthflightTuning.headUpDisplayAltimeterRefreshSeconds
-        let reading = Self.altimeterReading(heightAboveGroundMeters: heightAboveGroundMeters)
+        let reading = Self.altimeterReading(heightAboveGroundMeters: altimeterHeightMeters)
         if reading != shownAltimeterReading {
             shownAltimeterReading = reading
             showAltimeterReading(reading)
         }
+    }
+
+    /// Metres along a ray to the ground, or to the horizon when the ray clears
+    /// it. The ground is a sphere of the Earth's radius `heightMeters` below
+    /// the ray's start, and `sineOfElevation` is the ray's direction dotted
+    /// with local up: -1 straight down, 0 level.
+    ///
+    /// The two cases meet at the ray that grazes the horizon, so a mark moves
+    /// out to the horizon and stops there as the nose comes up, with no jump.
+    nonisolated static func groundDistanceMeters(
+        heightMeters: Double,
+        sineOfElevation: Double
+    ) -> Double {
+        // A start at or below the ground has no horizon. One metre up gives
+        // every ray an answer, as the sky's ray march does.
+        let height = max(heightMeters, 1)
+        let earthRadius = SkyAtmosphere.earthRadiusMeters
+        let horizonDistanceSquared = height * (2 * earthRadius + height)
+        // How far along the ray its closest approach to the Earth's centre is.
+        let closestApproach = -(earthRadius + height) * sineOfElevation
+        let reachesGround = closestApproach > 0 &&
+            closestApproach * closestApproach >= horizonDistanceSquared
+        return reachesGround
+            ? closestApproach - (closestApproach * closestApproach - horizonDistanceSquared).squareRoot()
+            : horizonDistanceSquared.squareRoot()
     }
 
     /// Whole metres, or whole kilometres from 10 km, where metres would be
@@ -157,27 +211,23 @@ final class HeadUpDisplay {
     /// Rebuilds the text mesh, then sets its right edge on the arm's end and
     /// its lowest glyph the tuned gap above the arm's top edge.
     private func showAltimeterReading(_ reading: String) {
-        let distance = EarthflightTuning.headUpDisplayDistanceMeters
-        // RealityKit takes a text mesh's font size in metres.
-        let fontSize = Self.radius(
-            distanceMeters: distance,
-            angleDegrees: EarthflightTuning.headUpDisplayAltimeterTextHeightDegrees
-        )
+        // RealityKit takes a text mesh's font size in metres, and the system
+        // font spaces its glyphs differently at different sizes. Six is the
+        // size the altimeter was accepted at, so the mesh is built there and
+        // scaled down to one metre's distance.
+        let fontSize: CGFloat = 6
         let mesh = MeshResource.generateText(
             reading,
-            extrusionDepth: fontSize / 100,
-            font: .monospacedDigitSystemFont(ofSize: CGFloat(fontSize), weight: .regular)
+            extrusionDepth: Float(fontSize) / 100,
+            font: .monospacedDigitSystemFont(ofSize: fontSize, weight: .regular)
         )
+        let scale = Self.tangent(degrees: EarthflightTuning.headUpDisplayAltimeterTextHeightDegrees) /
+            Float(fontSize)
+        let armTop = Self.tangent(degrees: EarthflightTuning.headUpDisplayHorizonBarThicknessDegrees / 2)
+        let gap = Self.tangent(degrees: EarthflightTuning.headUpDisplayAltimeterGapDegrees)
         altimeterText.model = ModelComponent(mesh: mesh, materials: [altimeterMaterial])
-        let armTop = Self.radius(
-            distanceMeters: distance,
-            angleDegrees: EarthflightTuning.headUpDisplayHorizonBarThicknessDegrees / 2
-        )
-        let gap = Self.radius(
-            distanceMeters: distance,
-            angleDegrees: EarthflightTuning.headUpDisplayAltimeterGapDegrees
-        )
-        altimeterText.position = [-mesh.bounds.max.x, armTop + gap - mesh.bounds.min.y, 0]
+        altimeterText.scale = .init(repeating: scale)
+        altimeterText.position = [-mesh.bounds.max.x * scale, armTop + gap - mesh.bounds.min.y * scale, 0]
     }
 
     /// Orientation of the horizon bar within the craft's frame, given the
@@ -209,22 +259,17 @@ final class HeadUpDisplay {
             EarthflightTuning.headUpDisplayHorizonBarGapMarginDegrees
     }
 
-    /// A flat ring in the XY plane, or a disc when the style asks for one. The
-    /// stroke is measured radially in degrees, like everything else here.
-    private static func circleMesh(distanceMeters: Float) -> MeshResource {
+    /// A flat ring one metre down the nose axis, or a disc when the style asks
+    /// for one. The stroke is measured radially in degrees, like everything
+    /// else here.
+    private static func ringMesh() -> MeshResource {
         let outerAngleDegrees = EarthflightTuning.headUpDisplayCircleDiameterDegrees / 2
-        let outerRadius = radius(distanceMeters: distanceMeters, angleDegrees: outerAngleDegrees)
+        let outerRadius = tangent(degrees: outerAngleDegrees)
         let innerRadius: Float = switch EarthflightTuning.headUpDisplayCircleStyle {
         case .filledDisc:
             0
         case .outlineRing:
-            radius(
-                distanceMeters: distanceMeters,
-                angleDegrees: max(
-                    0,
-                    outerAngleDegrees - EarthflightTuning.headUpDisplayCircleStrokeDegrees
-                )
-            )
+            tangent(degrees: max(0, outerAngleDegrees - EarthflightTuning.headUpDisplayCircleStrokeDegrees))
         }
 
         // 3.75 degree facets, whose largest departure from a true circle is
@@ -233,7 +278,7 @@ final class HeadUpDisplay {
         var positions: [SIMD3<Float>] = []
         var indices: [UInt32] = []
         if innerRadius <= 0 {
-            positions.append(.zero)
+            positions.append([0, 0, -1])
             for segment in 0...segmentCount {
                 positions.append(rimPoint(radius: outerRadius, segment: segment, of: segmentCount))
             }
@@ -251,21 +296,18 @@ final class HeadUpDisplay {
             }
         }
 
-        var descriptor = MeshDescriptor(name: "EarthflightHeadUpDisplayCircle")
+        var descriptor = MeshDescriptor(name: "EarthflightHeadUpDisplayRing")
         descriptor.positions = MeshBuffers.Positions(positions)
         descriptor.primitives = .triangles(indices)
         return try! .generate(from: [descriptor])
     }
 
     /// Two arms either side of the gap, each an arc of the horizontal circle
-    /// through the craft. Every point on an arc therefore lies exactly on the
-    /// horizon however long the arm is, where a flat bar would only touch it at
-    /// the centre and drift above it towards the ends.
-    private static func horizonBarMesh(distanceMeters: Float) -> MeshResource {
-        let halfThickness = radius(
-            distanceMeters: distanceMeters,
-            angleDegrees: EarthflightTuning.headUpDisplayHorizonBarThicknessDegrees / 2
-        )
+    /// one metre around the origin. Every point on an arc therefore lies
+    /// exactly on the horizon however long the arm is, where a flat bar would
+    /// only touch it at the centre and drift above it towards the ends.
+    private static func horizonBarMesh() -> MeshResource {
+        let halfThickness = tangent(degrees: EarthflightTuning.headUpDisplayHorizonBarThicknessDegrees / 2)
         let gapAngle = Float(horizonBarGapHalfAngleDegrees * .pi / 180)
         let armAngle = Float(
             EarthflightTuning.headUpDisplayHorizonBarArmLengthDegrees * .pi / 180
@@ -278,11 +320,7 @@ final class HeadUpDisplay {
             let base = UInt32(positions.count)
             for segment in 0...segmentCount {
                 let angle = side * (gapAngle + armAngle * Float(segment) / Float(segmentCount))
-                let alongHorizon = SIMD3<Float>(
-                    distanceMeters * sin(angle),
-                    0,
-                    -distanceMeters * cos(angle)
-                )
+                let alongHorizon = SIMD3<Float>(sin(angle), 0, -cos(angle))
                 positions.append(alongHorizon - [0, halfThickness, 0])
                 positions.append(alongHorizon + [0, halfThickness, 0])
             }
@@ -298,8 +336,9 @@ final class HeadUpDisplay {
         return try! .generate(from: [descriptor])
     }
 
-    private static func radius(distanceMeters: Float, angleDegrees: Double) -> Float {
-        distanceMeters * Float(tan(angleDegrees * .pi / 180))
+    /// What an angle spans, in metres, one metre away.
+    private static func tangent(degrees: Double) -> Float {
+        Float(tan(degrees * .pi / 180))
     }
 
     private static func rimPoint(
@@ -308,7 +347,7 @@ final class HeadUpDisplay {
         of segmentCount: Int
     ) -> SIMD3<Float> {
         let angle = 2 * Float.pi * Float(segment) / Float(segmentCount)
-        return [radius * cos(angle), radius * sin(angle), 0]
+        return [radius * cos(angle), radius * sin(angle), -1]
     }
 
     private static func material() -> UnlitMaterial {
@@ -324,7 +363,7 @@ final class HeadUpDisplay {
         )
         // A head-up display is drawn over the world rather than in it. Without
         // this the marks would vanish into the first hillside or tall building
-        // between the craft and a kilometre ahead.
+        // between the wearer and the ground they mark.
         material.readsDepth = false
         material.writesDepth = false
         // Neither mark is a closed surface, so winding is not worth reasoning

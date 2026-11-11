@@ -1,3 +1,9 @@
+// The oldest visionOS Earthflight runs on, for the app, its tests and the
+// native libraries alike: scripts/build-cesium-visionos.sh reads it from here.
+// Raise it with each new stable visionOS, then rebuild the native libraries as
+// the build's toolchain check asks.
+XROS_DEPLOYMENT_TARGET = 27.2
+
 GOOGLE_MAPS_API_KEY =
 
 // Local secrets are deliberately optional so a clean clone still builds.

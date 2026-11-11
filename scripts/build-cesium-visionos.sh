@@ -79,7 +79,11 @@ cmake_command="$(command -v cmake)"
 ninja_command="$(command -v ninja)"
 xros_sdk="$(xcrun --sdk xros --show-sdk-path)"
 
-deployment_target="27.0"
+deployment_target="$(sed -n 's/^XROS_DEPLOYMENT_TARGET *= *//p' "$earthflight_root/Config.xcconfig")"
+if [[ -z "$deployment_target" ]]; then
+    print -u2 "Config.xcconfig sets no XROS_DEPLOYMENT_TARGET."
+    exit 1
+fi
 target_triplet="arm64-visionos"
 target_arch="arm64"
 build_type="Release"
@@ -144,6 +148,17 @@ mkdir -p \
     "$earthflight_root/build/vcpkg-downloads" \
     "$earthflight_root/build/vcpkg-binary-cache"
 
+# vcpkg's own arm64-visionos triplet sets no deployment target, so every
+# dependency it builds targets whatever SDK is installed, and the app's linker
+# warns once per object file built for a newer visionOS than the app. This
+# overlay is that triplet with the app's deployment target added.
+triplet_overlay="$earthflight_root/build/vcpkg-triplets"
+mkdir -p "$triplet_overlay"
+{
+    cat "$vcpkg_source/triplets/community/$target_triplet.cmake"
+    print -r -- "set(VCPKG_OSX_DEPLOYMENT_TARGET $deployment_target)"
+} > "$triplet_overlay/$target_triplet.cmake"
+
 export XDG_CACHE_HOME="$vcpkg_cache"
 export VCPKG_ROOT="$vcpkg_source"
 export VCPKG_DOWNLOADS="$earthflight_root/build/vcpkg-downloads"
@@ -159,6 +174,7 @@ export VCPKG_DEFAULT_BINARY_CACHE="$earthflight_root/build/vcpkg-binary-cache"
     -DVCPKG_TARGET_TRIPLET="$target_triplet" \
     -DVCPKG_HOST_TRIPLET=arm64-osx \
     -DVCPKG_OVERLAY_PORTS="$vcpkg_source/ports/openssl" \
+    -DVCPKG_OVERLAY_TRIPLETS="$triplet_overlay" \
     -DCMAKE_SYSTEM_NAME=visionOS \
     -DCMAKE_OSX_SYSROOT="$xros_sdk" \
     -DCMAKE_OSX_ARCHITECTURES="$target_arch" \

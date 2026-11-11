@@ -183,6 +183,10 @@ After Xcode or the visionOS SDK changes:
 5. repeat a headset smoke test before starting anything new;
 6. update BUILDING.md's known-good toolchain table.
 
+When a new stable visionOS ships, the owner raises `XROS_DEPLOYMENT_TARGET` in
+`Config.xcconfig` to it. That one line moves the app, the tests and the native
+libraries together; the toolchain check then asks for the native rebuild.
+
 Do not add compatibility layers for superseded toolchains; support the installed
 one. A device OS update on its own is not a toolchain transition. Neither is a
 Swift language-mode change — but that still needs its own headset smoke test,

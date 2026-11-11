@@ -1,5 +1,5 @@
 diff --git a/ports/openssl/unix/portfile.cmake b/ports/openssl/unix/portfile.cmake
-index f959c6a00..6c2049c88 100644
+index 863deef48d..629101aab8 100644
 --- a/ports/openssl/unix/portfile.cmake
 +++ b/ports/openssl/unix/portfile.cmake
 @@ -72,6 +72,10 @@ elseif(VCPKG_TARGET_IS_IOS)
@@ -13,3 +13,29 @@ index f959c6a00..6c2049c88 100644
  elseif(VCPKG_TARGET_IS_TVOS OR VCPKG_TARGET_IS_WATCHOS)
      set(OPENSSL_ARCH iphoneos-cross)
      # disable that makes linkage error (e.g. require stderr usage)
+diff --git a/scripts/get_cmake_vars/CMakeLists.txt b/scripts/get_cmake_vars/CMakeLists.txt
+index 7e5ddbda85..08f6107254 100644
+--- a/scripts/get_cmake_vars/CMakeLists.txt
++++ b/scripts/get_cmake_vars/CMakeLists.txt
+@@ -151,7 +151,20 @@ macro(_vcpkg_adjust_flags flag_var)
+             endif()
+             if (CMAKE_OSX_DEPLOYMENT_TARGET)
+                 list(GET VCPKG_LANGUAGES 0 lang)
+-                string(APPEND ${flag_var} " ${CMAKE_${lang}_OSX_DEPLOYMENT_TARGET_FLAG}${CMAKE_OSX_DEPLOYMENT_TARGET}")
++                # CMake writes some platforms' flag as a template, such as
++                # visionOS's "--target=<ARCH>-apple-xros<VERSION_MIN>". Fill it
++                # in as CMake does; other flags take the version appended.
++                set(deployment_target_flag "${CMAKE_${lang}_OSX_DEPLOYMENT_TARGET_FLAG}")
++                if(deployment_target_flag MATCHES "<VERSION_MIN>")
++                    list(GET CMAKE_OSX_ARCHITECTURES 0 arch)
++                    string(REPLACE "<ARCH>" "${arch}" deployment_target_flag "${deployment_target_flag}")
++                    string(REPLACE "<VERSION_MIN>" "${CMAKE_OSX_DEPLOYMENT_TARGET}" deployment_target_flag "${deployment_target_flag}")
++                    unset(arch)
++                else()
++                    string(APPEND deployment_target_flag "${CMAKE_OSX_DEPLOYMENT_TARGET}")
++                endif()
++                string(APPEND ${flag_var} " ${deployment_target_flag}")
++                unset(deployment_target_flag)
+                 unset(lang)
+             endif()
+         endif()

@@ -228,7 +228,6 @@
 /* Begin XCBuildConfiguration section */
 		CF2DEC3830402D2600BD2F79 /* Debug configuration for PBXNativeTarget "earthflight" */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = E4F000001234567800000001 /* Config.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -312,7 +311,6 @@
 		};
 		CF2DEC3930402D2600BD2F79 /* Release configuration for PBXNativeTarget "earthflight" */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = E4F000001234567800000001 /* Config.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -396,6 +394,7 @@
 		};
 		CF2DEC3A30402D2600BD2F79 /* Debug configuration for PBXProject "earthflight" */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = E4F000001234567800000001 /* Config.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -454,12 +453,12 @@
 				SDKROOT = xros;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
-				XROS_DEPLOYMENT_TARGET = 27.0;
 			};
 			name = Debug;
 		};
 		CF2DEC3B30402D2600BD2F79 /* Release configuration for PBXProject "earthflight" */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = E4F000001234567800000001 /* Config.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -511,7 +510,6 @@
 				SDKROOT = xros;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				VALIDATE_PRODUCT = YES;
-				XROS_DEPLOYMENT_TARGET = 27.0;
 			};
 			name = Release;
 		};
@@ -533,7 +531,6 @@
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = 7;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/earthflight.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/earthflight";
-				XROS_DEPLOYMENT_TARGET = 27.0;
 			};
 			name = Debug;
 		};
@@ -555,7 +552,6 @@
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = 7;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/earthflight.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/earthflight";
-				XROS_DEPLOYMENT_TARGET = 27.0;
 			};
 			name = Release;
 		};

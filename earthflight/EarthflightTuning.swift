@@ -145,6 +145,12 @@ nonisolated enum EarthflightTuning {
     // tile request for coming too fast. Refused tiles are retried meanwhile.
     static let rateLimitNoticeSeconds: Double = 1
 
+    // How long after launch the warning that no gamepad is connected waits
+    // before it can show. A sleeping Switch Pro takes a few seconds to wake
+    // and connect, and the warning should not flash up meanwhile. After this
+    // it shows whenever no gamepad is connected.
+    static let gamepadWarningDelaySeconds: Double = 3
+
     // MARK: - Giant mode
 
     // The wearer's size steps in doublings: D-pad up grows, down shrinks. Zero

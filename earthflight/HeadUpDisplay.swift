@@ -123,9 +123,11 @@ final class HeadUpDisplay {
     /// nil until the head has been tracked, and the craft's own position then
     /// stands in for it.
     ///
-    /// The Jump To card is billboarded at the same azimuth a metre and a quarter
-    /// ahead, and the marks ignore depth, so they would otherwise be drawn over
-    /// its text. Hiding them while it is up is simpler than sorting them.
+    /// The Jump To card and the gamepad warning are billboarded at the same
+    /// azimuth a metre and a quarter ahead, and the marks ignore depth, so they
+    /// would otherwise be drawn over their text. Hiding them while either is up
+    /// is simpler than sorting them; without a gamepad there is no flying to
+    /// mark anyway.
     func update(
         craftOrientation: simd_quatf,
         groundDistanceHeightMeters: Double,
@@ -133,9 +135,10 @@ final class HeadUpDisplay {
         headWorldPosition: SIMD3<Float>?,
         worldScale: Double,
         isJumpToCardShown: Bool,
+        isGamepadWarningShown: Bool,
         deltaTime: TimeInterval
     ) {
-        entity.isEnabled = mode != .hidden && !isJumpToCardShown
+        entity.isEnabled = mode != .hidden && !isJumpToCardShown && !isGamepadWarningShown
         guard entity.isEnabled else {
             return
         }

@@ -61,6 +61,9 @@ final class Gamepad {
         onPress = nil
     }
 
+    /// Whether a controller is bound, without which the craft cannot move.
+    var isConnected: Bool { boundController != nil }
+
     /// This frame's input, or nil when no controller is bound.
     func currentInput() -> FlightInput? {
         guard let gamepad = boundController?.extendedGamepad else {

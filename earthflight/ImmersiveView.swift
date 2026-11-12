@@ -10,6 +10,7 @@ struct ImmersiveView: View {
     /// The SwiftUI panels that hang in the scene.
     private enum Panel: Hashable {
         case jumpTo
+        case gamepadWarning
         case rateLimitNotice
         case attribution
     }
@@ -23,6 +24,7 @@ struct ImmersiveView: View {
     @State private var sky: SkyDome?
     @State private var attribution = ""
     @State private var isRateLimited = false
+    @State private var isGamepadMissing = false
     // Held here rather than by anything the update closure captures, which
     // would make a retain cycle that no session end could break.
     @State private var sceneUpdateSubscription: EventSubscription?
@@ -56,6 +58,9 @@ struct ImmersiveView: View {
 
             // Zero, so the first frame measures.
             var secondsUntilGroundMeasurement = 0.0
+            // Counted from the first frame rather than from launch itself,
+            // which only lengthens the wait slightly.
+            var secondsUntilGamepadCheck = EarthflightTuning.gamepadWarningDelaySeconds
 
             sceneUpdateSubscription = content.subscribe(to: SceneEvents.Update.self) { event in
                 let deltaTime = event.deltaTime
@@ -100,6 +105,12 @@ struct ImmersiveView: View {
                     ellipsoidHeightMeters: flightState.ellipsoidHeightMeters,
                     deltaTime: deltaTime
                 )
+                // Written only on a change, like the rate-limit notice below.
+                secondsUntilGamepadCheck -= deltaTime
+                let isGamepadMissingNow = secondsUntilGamepadCheck <= 0 && !gamepad.isConnected
+                if isGamepadMissingNow != isGamepadMissing {
+                    isGamepadMissing = isGamepadMissingNow
+                }
                 let worldFromHead = headTracking.currentWorldFromHead()
                 // The speed curve's height is the smoothed one, so the marks do
                 // not jump in depth each time the ground is measured.
@@ -110,6 +121,7 @@ struct ImmersiveView: View {
                     headWorldPosition: worldFromHead.map { simd_make_float3($0.columns.3) },
                     worldScale: giantMode.worldScale,
                     isJumpToCardShown: jumpTo.isCardShown,
+                    isGamepadWarningShown: isGamepadMissing,
                     deltaTime: deltaTime
                 )
                 // Written only on a change, so SwiftUI is not asked to redraw
@@ -170,6 +182,17 @@ struct ImmersiveView: View {
                 .opacity(jumpTo.isCardShown ? 1 : 0)
                 .allowsHitTesting(false)
             }
+            Attachment(id: Panel.gamepadWarning) {
+                VStack(spacing: 8) {
+                    Text("This app requires that you have a gamepad in order to move.")
+                    Text("Please connect one before continuing.")
+                }
+                .font(.title2)
+                .padding(24)
+                .background(.black.opacity(0.7), in: .rect(cornerRadius: 16))
+                .opacity(isGamepadMissing ? 1 : 0)
+                .allowsHitTesting(false)
+            }
             Attachment(id: Panel.rateLimitNotice) {
                 Text("Google is limiting tile requests: slow down")
                     .font(.title3)
@@ -209,6 +232,13 @@ struct ImmersiveView: View {
             card.position = [0, 1.5, -1.25]
             card.components.set(BillboardComponent())
             content.add(card)
+        }
+        if let warning = attachments.entity(for: Panel.gamepadWarning) {
+            // Midway between the Jump To card and the rate-limit notice, so it
+            // covers neither.
+            warning.position = [0, 1.3, -1.25]
+            warning.components.set(BillboardComponent())
+            content.add(warning)
         }
         if let notice = attachments.entity(for: Panel.rateLimitNotice) {
             // Below the Jump To card, about 16 degrees under the nose, so it

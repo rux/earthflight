@@ -163,7 +163,7 @@ meshes. Do not revive the ancestor shell.
   to nearly full turn rate as it reached centre.
 * Cesium's `sampleHeightMostDetailed` is not a cheap ground probe: it forces
   detailed tiles to load, and each passes through the renderer's preparation,
-  building RealityKit meshes on the main thread for tiles never shown.
+  building RealityKit meshes and textures for tiles never shown.
 
 ---
 

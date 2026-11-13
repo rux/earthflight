@@ -112,7 +112,10 @@ final class GoogleTileRenderer {
         descriptor.textureCoordinates = MeshBuffers.TextureCoordinates(payload.textureCoordinates.array())
         descriptor.primitives = .triangles(payload.indices.array())
 
-        let mesh = try MeshResource.generate(from: [descriptor])
+        // The async initialiser is nonisolated, so RealityKit builds the mesh
+        // off the main thread. `MeshResource.generate(from:)` does the same
+        // work on it, inside whichever frame the tile arrives in.
+        let mesh = try await MeshResource(from: [descriptor])
         let texture = try await makeTexture(
             rgba8: payload.rgbaImage,
             width: payload.imageWidth,

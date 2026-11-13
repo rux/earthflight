@@ -61,6 +61,13 @@ against its header. `__isolated_deallocating_deinit` hits are routine.
   every new texture on the M2 Vision Pro**, even with constant test pixels and
   even after a completed GPU copy. The `CGImage` path does not. This applies to
   tiles and the sky alike.
+* **`MeshResource(from:) async` still builds most of the mesh on the main
+  thread.** It is declared nonisolated, but it dispatches its heavy step
+  (`REAssetManagerMeshAssetCreateFromModels...`) back to the main queue. Time
+  Profiler on the headset, Release, 40-second flights: tile meshes cost the main
+  thread about 2.5 s with `MeshResource.generate(from:)` and 2.0 s with the
+  async initialiser. Neither held the main thread much longer than one frame at
+  a time.
 * **A SwiftUI `.overlay` on the full immersive `RealityView` is not usable.** For
   Jump To it never presented on hardware; for the attribution it presented
   somewhere it could not be positioned and was seen from behind, reading

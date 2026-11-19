@@ -81,7 +81,7 @@ final class Gamepad {
             // labels: A bottom, B right, X left, Y top. The left one rolls left
             // and the top one rolls right.
             roll: (gamepad.buttonY.isPressed ? 1 : 0) - (gamepad.buttonX.isPressed ? 1 : 0),
-            isBoosting: gamepad.buttonA.isPressed,
+            isBoosting: gamepad.leftThumbstickButton?.isPressed ?? false,
             isVerticalBoosting:
                 (gamepad.leftShoulder.isPressed && gamepad.rightShoulder.isPressed) ||
                 (gamepad.leftTrigger.isPressed && gamepad.rightTrigger.isPressed)

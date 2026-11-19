@@ -153,11 +153,11 @@ Verify any new button on the headset rather than inferring it.
 | Left stick left/right | Strafe |
 | Right stick left/right | Yaw |
 | Right stick up/down | Pitch, aircraft-style inverted |
+| Left-stick click | General speed boost |
 | Right-stick click | Full orientation reset to the launch attitude |
 | Either shoulder button (L, R) | Ascend; both together adds the vertical boost |
 | Either trigger (ZL, ZR) | Descend; both together adds the vertical boost |
 | Left / top face button (`buttonX` / `buttonY`) | Roll left / roll right |
-| Bottom face button (`buttonA`) | General speed boost |
 | Primary menu button (`buttonMenu`, `+`) | Open voice Jump To |
 | Secondary menu button (`buttonOptions`, `-`) | Cycle the head-up display: marks, marks with altimeter, off |
 | D-pad up / down | Grow / shrink the wearer; see giant mode below |
@@ -167,8 +167,8 @@ LB/RB, LT/RT, Menu and View; on a PlayStation controller L1/R1, L2/R2, Options
 and Create. Neither has been tried.
 
 Inverted pitch means pushing the right stick physically forward pitches the nose
-down. The D-pad's left and right, the right face button, the left-stick click and
-the Home button are unused.
+down. The D-pad's left and right, the bottom and right face buttons and the Home
+button are unused.
 
 ## Toolchain transitions
 

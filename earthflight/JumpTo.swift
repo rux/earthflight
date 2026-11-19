@@ -329,7 +329,12 @@ final class JumpTo {
             URLQueryItem(name: "locations", value: "\(latitudeDegrees),\(longitudeDegrees)"),
             URLQueryItem(name: "key", value: apiKey)
         ]
-        let (data, response) = try await URLSession.shared.data(from: components.url!)
+        var request = URLRequest(url: components.url!)
+        // The key has an iOS application restriction, which the Elevation API
+        // enforces like Map Tiles: without this header Google answers HTTP 200
+        // with status REQUEST_DENIED.
+        request.setValue(Bundle.main.bundleIdentifier!, forHTTPHeaderField: "X-Ios-Bundle-Identifier")
+        let (data, response) = try await URLSession.shared.data(for: request)
         let http = response as? HTTPURLResponse
         guard http?.statusCode == 200 else { throw JumpError.elevationHTTP(http?.statusCode ?? -1) }
         let decoded = try JSONDecoder().decode(ElevationResponse.self, from: data)

@@ -521,31 +521,44 @@ std::string decorateGoogleURL(const std::string& url, NSString *apiKey) {
     }
 }
 
-/// Adds the API key to every Google tile request. Child URLs already carry
-/// Google's session parameter, which must be preserved.
+/// Adds the API key and the app's bundle ID to every Google tile request.
+/// Child URLs already carry Google's session parameter, which must be
+/// preserved.
 class GoogleAssetAccessor final : public CesiumAsync::IAssetAccessor {
 public:
     GoogleAssetAccessor(std::shared_ptr<CesiumAsync::IAssetAccessor> accessor, NSString *apiKey)
-        : accessor_(std::move(accessor)), apiKey_([apiKey copy]) {}
+        : accessor_(std::move(accessor)), apiKey_([apiKey copy]),
+          bundleIdentifier_(NSBundle.mainBundle.bundleIdentifier.UTF8String) {}
 
     CesiumAsync::Future<std::shared_ptr<CesiumAsync::IAssetRequest>> get(
         const CesiumAsync::AsyncSystem& asyncSystem, const std::string& url,
         const std::vector<THeader>& headers) override {
-        return accessor_->get(asyncSystem, decorateGoogleURL(url, apiKey_), headers);
+        return accessor_->get(asyncSystem, decorateGoogleURL(url, apiKey_), withBundleIdentifier(headers));
     }
 
     CesiumAsync::Future<std::shared_ptr<CesiumAsync::IAssetRequest>> request(
         const CesiumAsync::AsyncSystem& asyncSystem, const std::string& verb,
         const std::string& url, const std::vector<THeader>& headers,
         const std::span<const std::byte>& payload) override {
-        return accessor_->request(asyncSystem, verb, decorateGoogleURL(url, apiKey_), headers, payload);
+        return accessor_->request(asyncSystem, verb, decorateGoogleURL(url, apiKey_), withBundleIdentifier(headers), payload);
     }
 
     void tick() noexcept override { accessor_->tick(); }
 
 private:
+    // The key has an iOS application restriction. Google's SDKs send this
+    // header for an app, but a direct REST client must send it itself. Map Tiles
+    // enforces it on root and child requests alike: no header, or the wrong
+    // bundle ID, is 403 PERMISSION_DENIED, which fails every tile for good.
+    // Changing PRODUCT_BUNDLE_IDENTIFIER means changing the key's restriction.
+    std::vector<THeader> withBundleIdentifier(std::vector<THeader> headers) const {
+        headers.emplace_back("X-Ios-Bundle-Identifier", bundleIdentifier_);
+        return headers;
+    }
+
     std::shared_ptr<CesiumAsync::IAssetAccessor> accessor_;
     NSString *apiKey_;
+    std::string bundleIdentifier_;
 };
 
 std::shared_ptr<spdlog::logger> makeSanitizedCesiumLogger() {

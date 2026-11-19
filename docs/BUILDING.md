@@ -24,7 +24,7 @@ The native libraries must be built by the same Xcode that builds the app. This c
 From the repository root:
 
 1. Install CMake and Ninja (`brew install cmake ninja`).
-2. Copy `Secrets.example.xcconfig` to `Secrets.xcconfig` and set `GOOGLE_MAPS_API_KEY` to a Google Map Tiles API key. The file is ignored by Git.
+2. Copy `Secrets.example.xcconfig` to `Secrets.xcconfig` and set `GOOGLE_MAPS_API_KEY` to a Google Map Tiles API key. The file is ignored by Git. In Google Cloud Console, restrict the key to iOS apps with bundle ID `uk.co.logicterm.earthflight`; the app sends it in `X-Ios-Bundle-Identifier`.
 3. Build the native dependencies. This takes several minutes the first time:
 
    ```sh

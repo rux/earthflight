@@ -17,5 +17,3 @@ These instructions assume a Nintendo Switch Pro controller, but will work for Xb
  - Pressing the - button on the left will cycle the HUD view
  - Pressing the Home button will exit.
 
-## Licence
-The source is Apache 2.0; see `LICENSE` and `NOTICE`. The Earthflight name and icon are not part of the licence.
